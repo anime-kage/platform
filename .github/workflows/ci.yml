@@ -25,7 +25,10 @@ permissions:
 
 jobs:
   backend:
-    name: Go — build, vet, test
+    # Plain ASCII, one word: this string becomes the required status check,
+    # and it is typed into a search box to select it. An em dash there is
+    # unfindable.
+    name: backend
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,7 +54,7 @@ jobs:
         run: go test ./...
 
   frontend:
-    name: Frontend — types, tests, build
+    name: frontend
     runs-on: ubuntu-latest
     defaults:
       run:
