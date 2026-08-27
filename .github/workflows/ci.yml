@@ -1,0 +1,88 @@
+# Runs on every pull request, and on main after a merge.
+#
+# What this is FOR: making it safe to merge a change you did not write yourself.
+# Both halves of the project already have tests that nobody remembers to run —
+# this runs them for you, every time, and blocks the merge if they fail.
+#
+# Kept to one file and two jobs on purpose. A pipeline nobody understands is a
+# pipeline people learn to force past.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A second push to the same PR cancels the first run — no point burning minutes
+# proving a commit you have already replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Go — build, vet, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Matches backend-go/go.mod. Bump both together.
+          go-version: '1.25'
+          cache-dependency-path: backend-go/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # The integration suite needs TEST_DATABASE_URL and is skipped without it;
+      # everything else runs here.
+      - name: Test
+        run: go test ./...
+
+  frontend:
+    name: Frontend — types, tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22 specifically: .npmrc sets engine-strict=true and the production
+          # image is node:22-alpine, so anything else fails install outright.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `ci`, not `install`: it installs exactly what package-lock.json says and
+      # fails if the lockfile disagrees, so CI cannot silently drift.
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Smart TVs run old Chromium. This parses every built file at that syntax
+      # floor, which is the check that caught a blank page on LG webOS after
+      # Vite started emitting `?.` and `??` into the bundle.
+      - name: Browser syntax floor
+        run: npm run check:browser
