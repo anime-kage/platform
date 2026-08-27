@@ -1,0 +1,22 @@
+# Keep the host's build artifacts out of the image build.
+#
+# node_modules is the one that actually breaks things: the Dockerfile runs
+# `npm ci` and only then `COPY . .`, so a host node_modules is copied straight
+# over the freshly installed one. Locally that is merely wasteful; deploying
+# from a different architecture it is fatal — an x86_64 checkout carries
+# @esbuild/linux-x64 and rollup-linux-x64-*, and `npm run build` on this arm64
+# box then dies on a native binary it cannot execute.
+node_modules/
+
+# Build outputs — regenerated inside the image by `npm run build`.
+build/
+.svelte-kit/
+
+# Secrets never belong in a build context.
+.env
+.env.*
+
+# Dev-only image definition.
+Dockerfile.dev
+
+.git/

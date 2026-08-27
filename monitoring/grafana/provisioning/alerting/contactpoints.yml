@@ -1,0 +1,34 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: discord-alerts
+    receivers:
+      - uid: discord-alerts
+        type: discord
+        settings:
+          # From the environment so the webhook — a credential anyone can post
+          # to your channel with — stays in .env and out of the repository.
+          url: $__env{DISCORD_ALERT_WEBHOOK}
+          title: '{{ if eq .Status "firing" }}🔴 {{ .CommonLabels.alertname }}{{ else }}🟢 Resolved · {{ .CommonLabels.alertname }}{{ end }}'
+          # NB: a two-variable range ({{ range $k, $v := ... }}) is rejected by the
+          # Discord notifier's template parser, and a template error makes it
+          # fall back SILENTLY to the default format — which looks like the
+          # template was ignored rather than broken. Single-variable range only.
+          # Written out rather than default.message, which buries the one number
+          # that matters under a wall of labels. Ordered the way you need it at
+          # 3am: what is wrong, how bad, the actual number, what to do, links.
+          message: |
+            {{ range .Alerts }}{{ if eq .Status "firing" }}{{ .Annotations.summary }}
+
+            **Measured**  {{ range .Values }}`{{ printf "%.4g" . }}` {{ end }}
+            **Severity**  {{ .Labels.severity }}
+            **Started**   {{ .StartsAt.Format "02 Jan 15:04 UTC" }}
+            {{ if .Annotations.runbook }}
+            **What to check**
+            {{ .Annotations.runbook }}
+            {{ end }}{{ if .DashboardURL }}
+            [Dashboard]({{ .DashboardURL }}){{ if .SilenceURL }} · [Silence]({{ .SilenceURL }}){{ end }}{{ end }}
+            {{ else }}Recovered at {{ .EndsAt.Format "02 Jan 15:04 UTC" }} — was firing since {{ .StartsAt.Format "15:04 UTC" }}.
+            {{ end }}{{ end }}
+        disableResolveMessage: false

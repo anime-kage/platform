@@ -1,0 +1,147 @@
+/* ============================================================
+   Base / reset. Imported once in +layout, after tokens.css.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
+
+/* 17px root: the design sketch was a dense mockup; real pages read at
+   ~16-17px body. All type is rem-based, so everything scales from here. */
+html { font-size: 106.25%; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+body {
+  min-height: 100dvh;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  transition: background-color 0.35s ease, color 0.35s ease;
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  text-wrap: balance;
+  color: var(--text-primary);
+}
+h1 { font-size: var(--fs-h1); }
+h2 { font-size: var(--fs-h2); }
+h3 { font-size: var(--fs-h3); }
+p { text-wrap: pretty; }
+
+a { color: var(--accent); text-decoration: none; transition: color var(--motion-fast) var(--ease); }
+a:hover { color: var(--accent-hover); }
+
+img, picture, video, svg { display: block; max-width: 100%; height: auto; }
+button, input, select, textarea { font: inherit; color: inherit; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+/* ---- Touch targets ----
+   On a touch device a control needs ~44px of hittable height. This grows the
+   real box on coarse pointers only, so the mouse layout is untouched.
+   Deliberately scoped to standalone controls: inline links inside running
+   text must NOT grow, or paragraph line spacing breaks, and an invisible
+   44px halo on every anchor would overlap its neighbours and steal their
+   taps — which is the failure mode this is meant to fix. */
+@media (pointer: coarse) {
+  button:not(.tap-exact),
+  .btn,
+  .icon-btn,
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  [role='button']:not(.tap-exact) {
+    min-height: var(--tap-min);
+  }
+  /* icon-only square controls need the width too */
+  .icon-btn, .ib, .ibtn { min-width: var(--tap-min); }
+  /* chip/pill navigation reads as a link but behaves as a button — these are
+     the pagers, filter chips and tab strips, all ~29px tall by default */
+  .pill, .tab, .chip, .jump {
+    display: inline-flex; align-items: center;
+    min-height: var(--tap-min);
+  }
+  /* checkboxes/radios are tiny by default on every browser */
+  input[type='checkbox'], input[type='radio'] { min-width: 20px; min-height: 20px; }
+}
+::selection { background: var(--accent); color: var(--on-accent); }
+
+/* ---- Layout helpers ---- */
+.container {
+  width: 100%;
+  max-width: var(--container);
+  margin-inline: auto;
+  padding-inline: clamp(1rem, 4vw, 2.5rem);
+}
+.container--narrow { max-width: var(--container-narrow); }
+
+/* mono uppercase label — the sketch's recurring "kicker" */
+.kicker {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.stack > * + * { margin-top: var(--space-4); }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---- Scrollbar: subtle, neutral (no cyan gradient) ---- */
+* { scrollbar-width: thin; scrollbar-color: var(--surface-overlay) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--surface-overlay);
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--surface-base);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ink-500); }
+
+/* ---- Poster / cover art treatment ----
+   Real cover art is bright and saturated; the sketch's posters are muted
+   duotones. This pulls every poster toward the site palette so the grid
+   reads as one surface instead of a wall of competing colors. */
+.media-tone { filter: saturate(0.78) contrast(1.04) brightness(0.9); }
+
+/* ---- Default avatar: the monogram tile ----
+   Users without an uploaded photo get a serif initial on a flat hue-tinted
+   ink tile (hue derived from the username — lib/avatar.ts), instead of the
+   stock gradient circle. Set `--mg-hue` inline; size comes from the caller. */
+.monogram {
+  display: inline-grid !important;
+  place-items: center;
+  background: oklch(0.24 0.03 var(--mg-hue, 260)) !important;
+  color: oklch(0.82 0.09 var(--mg-hue, 260)) !important;
+  border: 1px solid oklch(0.6 0.08 var(--mg-hue, 260) / 0.35);
+  border-radius: 26% !important;
+  font-family: var(--font-display) !important;
+  font-style: italic;
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* ---- Motion primitives (sketch: akUp/akFade/akPulse) ---- */
+@keyframes ak-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes ak-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ak-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.anim-up { animation: ak-up 0.5s var(--ease) both; }
+.anim-fade { animation: ak-fade 0.15s ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

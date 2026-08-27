@@ -1,0 +1,366 @@
+# Anime-Kage — nginx reverse proxy (production only; docker-compose.dev.yml runs
+# no proxy). Terminates TLS and fronts the frontend, the API and Grafana.
+#
+# This is a *template*: the official nginx image runs envsubst over anything in
+# /etc/nginx/templates/*.template at startup and writes the result to
+# /etc/nginx/conf.d/. Only SITE_DOMAIN is exported into the container, so nginx's
+# own $host / $remote_addr / $request_uri are left untouched. Same intent as the
+# same SITE_DOMAIN everywhere: no per-environment editing of this file.
+#
+# TLS is a Cloudflare Origin Certificate — trusted only by Cloudflare, which is
+# all that ever connects here. The restriction is NOT in ufw, despite what this
+# comment used to claim: Docker's DNAT runs ahead of ufw's filter chain, so a
+# ufw rule on a container-published port enforces nothing. It lives in the
+# CF-ORIGIN chain off DOCKER-USER — see /usr/local/sbin/cf-origin-lock.sh and
+# cf-origin-lock.{service,timer}. `sudo iptables -S CF-ORIGIN` to inspect it.
+# Cloudflare SSL mode must be Full (strict).
+
+# ─── Real client IP ──────────────────────────────────────────────────────────
+# Every connection arrives from Cloudflare, so $remote_addr is a Cloudflare
+# address until this rewrites it. CF-Connecting-IP is safe to trust *because*
+# nothing but Cloudflare can reach this port; if the ufw rule is ever removed,
+# this becomes spoofable and must go with it.
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
+
+# Keep the session JWT out of the access log.
+#
+# /api/chat/stream and the /api/releases routes accept ?token= because
+# EventSource and <video>/<track> cannot send an Authorization header. The
+# default "combined" format logs $request, which includes the query -- so every
+# one of those requests wrote a live credential to disk. The claims carry no
+# scope, so that string is the whole account for its full 7-day life, and a JWT
+# cannot be revoked (logout is client-side only).
+#
+# The map keeps ordinary queries (?page=, ?limit=) and masks only the token.
+map $request_uri $safe_request_uri {
+    "~^(?<path_only>[^?]*)\?(.*&)?[Tt][Oo][Kk][Ee][Nn]="  "$path_only?token=[redacted]";
+    default                                                 $request_uri;
+}
+
+log_format redacted '$remote_addr - $remote_user [$time_local] '
+                    '"$request_method $safe_request_uri $server_protocol" '
+                    '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+
+# Docker's embedded DNS. Needed because the proxy_pass targets below go through
+# a variable, which is what forces nginx to re-resolve them at request time
+# instead of once at startup. Without this, `docker compose up -d backend`
+# hands the backend a new container IP and nginx serves 502 from a cached one
+# until it is reloaded — the classic nginx-in-compose failure Caddy does not
+# have.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${SITE_DOMAIN};
+
+    # Cloudflare pulls over HTTPS under Full (strict), so this is only hit by a
+    # stray plaintext request. Send it back up to TLS.
+    return 308 https://$host$request_uri;
+}
+
+# www is a SEPARATE ORIGIN to a browser, and without this block it matched no
+# server_name and fell through to the apex block below -- so the site was served
+# under two origins at once. The client bundle calls the API at the apex, so a
+# login from www was cross-origin: the browser preflighted it, the backend's
+# CORS_ORIGIN allows only the apex, no Access-Control-Allow-Origin came back,
+# and the POST was blocked before it was ever sent. The page showed "invalid
+# email or password" for a request the server never received.
+#
+# It matters beyond CORS: the JWT lives in localStorage, which is per-origin, so
+# a session started on www is invisible on the apex. One canonical origin is the
+# fix; this redirect is what makes it one.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name www.${SITE_DOMAIN};
+
+    ssl_certificate     /etc/nginx/certs/origin.pem;
+    ssl_certificate_key /etc/nginx/certs/origin.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+
+    server_tokens off;
+
+    return 301 https://${SITE_DOMAIN}$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${SITE_DOMAIN};
+
+    ssl_certificate     /etc/nginx/certs/origin.pem;
+    ssl_certificate_key /etc/nginx/certs/origin.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1h;
+
+    server_tokens off;
+
+    # HSTS: a year, subdomains included. Browsers will refuse plain HTTP for
+    # that long, so this stays commented until the certificate chain is
+    # confirmed working end to end. Note Cloudflare can also send
+    # this from the edge — enabling it in both places is redundant, not additive.
+    # add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Uploads are capped in the handlers themselves (3 GB video + 2×5 MB subs in
+    # releases.go, 2 MB avatars in users.go, 32 MB MAL XML in malxml). nginx
+    # would otherwise reject at its own 1 MB default long before the handler
+    # ever sees the request. Cloudflare's own body limit applies first and is
+    # lower — see nginx/README-uploads.md.
+    client_max_body_size 3100m;
+    client_body_timeout 300s;
+
+    # Response-header buffers, sized for SvelteKit's preload hints.
+    #
+    # adapter-node emits a `Link: <…>; rel=modulepreload` header naming EVERY JS
+    # chunk a page needs. On the heavier pages (the episode player) that is well
+    # past nginx's 4k/8k default, and nginx answers "upstream sent too big
+    # header" with a 502 — the page never reaches the browser. It grows every
+    # time a component is added, so this is sized with room rather than to fit.
+    proxy_buffer_size 32k;
+    proxy_buffers 8 32k;
+    proxy_busy_buffers_size 64k;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css text/javascript application/javascript
+               application/json application/xml image/svg+xml;
+
+    access_log /var/log/nginx/access.log redacted;
+    error_log  /var/log/nginx/error.log warn;
+
+    # Shared proxy headers. X-Forwarded-For carries the real client because
+    # real_ip_header above already rewrote $remote_addr; the backend's
+    # httpx.ClientIP then walks it against TRUSTED_PROXIES.
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+
+    # ─── Live chat (SSE) ────────────────────────────────────────────────────
+    # Must come before /api/ — nginx picks the longest matching prefix, so this
+    # wins for exactly this one path. The handler already sends
+    # X-Accel-Buffering: no, which nginx honours; these are the belt to that
+    # braces, plus a read timeout long enough that the 25s comment ping is what
+    # keeps the connection alive rather than what races it.
+    location = /api/chat/stream {
+        set $sse_upstream backend:3000;
+        proxy_pass http://$sse_upstream$request_uri;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # ─── API ────────────────────────────────────────────────────────────────
+    location /api/ {
+        set $api_upstream backend:3000;
+        proxy_pass http://$api_upstream$request_uri;
+
+        # Stream large uploads straight through instead of spooling the whole
+        # body to a temp file first. At the 3 GB video cap, buffering would mean
+        # writing 3 GB to disk before the backend sees byte one.
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location = /health {
+        set $health_upstream backend:3000;
+        proxy_pass http://$health_upstream$request_uri;
+        access_log off;
+    }
+
+    # ─── Uploaded media ────────────────────────────────────────────────────
+    # Avatars, curated artwork, scanlation pages and published subtitle tracks
+    # are served by the API out of UPLOADS_DIR, not by SvelteKit. The browser
+    # requests them at the public origin (frontend/src/lib/media.ts builds
+    # ${VITE_API_URL}/uploads/…), so without this they would fall through to
+    # the SvelteKit catch-all and 404.
+    location /uploads/ {
+        set $uploads_upstream backend:3000;
+        proxy_pass http://$uploads_upstream$request_uri;
+    }
+
+    # ─── SvelteKit (adapter-node) ──────────────────────────────────────────
+    # The prod image listens on 3000, not Vite's 5173.
+    # Grafana, served under a sub-path so ops has one authenticated entry
+    # point instead of a published port. Grafana runs with
+    # GF_SERVER_SERVE_FROM_SUB_PATH=true, so it expects to SEE the /grafana
+    # prefix — $request_uri passes it through unstripped, which is why there is
+    # no trailing slash on the proxy_pass target.
+    #
+    # Prometheus and the exporters are deliberately NOT routed here: they have
+    # no authentication of their own, and Grafana already queries them over the
+    # compose network.
+    location /grafana/ {
+        set $grafana_upstream grafana:3000;
+        proxy_pass http://$grafana_upstream$request_uri;
+
+        # Grafana Live (dashboard streaming) is a websocket; without these it
+        # falls back to polling and logs upgrade errors on every panel.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Dashboards render slowly on wide time ranges; the default 60s read
+        # timeout cuts long queries off mid-flight.
+        proxy_read_timeout 300s;
+    }
+
+    # Bare /grafana with no trailing slash would 404 against the block above.
+    location = /grafana {
+        return 301 $scheme://$host/grafana/;
+    }
+
+    location / {
+        set $frontend_upstream frontend:3000;
+        proxy_pass http://$frontend_upstream$request_uri;
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGING — staging.${SITE_DOMAIN}
+#
+# The same stack as production, from docker-compose.staging.yml, with its own
+# database and its own JWT secret. It exists so a branch can be looked at as a
+# real site before it reaches members.
+#
+# Behind HTTP basic auth: staging runs unreleased work and must not be indexed,
+# shared, or mistaken for the live site by a member who was sent a link.
+# Credentials live in nginx/auth/staging.htpasswd (gitignored — a hash is still
+# a credential).
+#
+# Upstreams are the `-staging` service names. They are suffixed because Compose
+# registers a service name as a network alias on every network it joins, and a
+# plain `backend` here would resolve round-robin between staging's container and
+# PRODUCTION's.
+# ─────────────────────────────────────────────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name staging.${SITE_DOMAIN};
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name staging.${SITE_DOMAIN};
+
+    # Same wildcard origin certificate as the apex — *.${SITE_DOMAIN} covers this.
+    ssl_certificate     /etc/nginx/certs/origin.pem;
+    ssl_certificate_key /etc/nginx/certs/origin.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    server_tokens off;
+
+    # Never let staging into a search index, whatever it happens to be serving.
+    add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+
+    # No HTTP basic auth. It was here and it was the wrong tool:
+    #
+    #  * it cannot cover /api/ at all — there is one Authorization header, and
+    #    the app's `Bearer <jwt>` replaces the `Basic` credential, so every
+    #    signed-in request 401'd and staging looked logged-out to everyone;
+    #  * with /api/ exempted, half the origin was gated and half was not, which
+    #    made Chrome re-challenge on navigation;
+    #  * and it protected a database that now contains only fabricated accounts.
+    #
+    # What actually keeps staging out of the way is the noindex header above and
+    # the banner injected below. If a real gate is wanted later, Cloudflare
+    # Access is the tool: it authenticates at the edge with its own cookie and
+    # never touches the Authorization header, so it cannot collide with the app.
+
+    # Mark staging in the BROWSER TAB rather than on the page. A fixed bar at
+    # the bottom of the viewport sat on top of the chat input and anything else
+    # anchored there, which made the environment harder to test than the thing
+    # it was labelling. The title is visible everywhere and covers nothing.
+    sub_filter '<title>' '<title>[STAGING] ';
+    sub_filter_once on;
+    sub_filter_types text/html;
+
+    client_max_body_size 3100m;
+    client_body_timeout 300s;
+    proxy_buffer_size 32k;
+    proxy_buffers 8 32k;
+
+    access_log /var/log/nginx/access.log redacted;
+    error_log  /var/log/nginx/error.log warn;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+
+    # Live chat (SSE). Before /api/ — nginx takes the longest matching prefix.
+    location = /api/chat/stream {
+        set $st_sse backend-staging:3000;
+        proxy_pass http://$st_sse$request_uri;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /api/ {
+        set $st_api backend-staging:3000;
+        proxy_pass http://$st_api$request_uri;
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location = /health {
+        set $st_health backend-staging:3000;
+        proxy_pass http://$st_health$request_uri;
+        access_log off;
+    }
+
+    location /uploads/ {
+        set $st_uploads backend-staging:3000;
+        proxy_pass http://$st_uploads$request_uri;
+    }
+
+    # No /grafana/ here on purpose: there is one Grafana and it belongs to prod.
+
+    location / {
+        set $st_front frontend-staging:3000;
+        proxy_pass http://$st_front$request_uri;
+    }
+}

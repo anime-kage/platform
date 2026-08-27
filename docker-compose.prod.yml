@@ -1,0 +1,400 @@
+# Production stack. Reads its values from a .env file sitting next to it —
+# copy .env.prod.example and fill it in. `version:` is deliberately absent:
+# Compose v2 ignores it and warns.
+# The project name is pinned rather than derived from the directory.
+#
+# Compose defaults it to the folder name, and BOTH compose files live in this
+# folder — so dev and prod were the same project. Running the dev stack here
+# replaced the production containers and, because `--build` tags images after
+# the project, overwrote the production frontend image with the Vite dev one.
+# The site 502'd: the container was still called anime-kage-frontend but ran
+# `vite dev` on 5173 while nginx proxies to 3000.
+#
+# With an explicit name the two stacks cannot see each other.
+name: anime-kage
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: anime-kage-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-anime_kage}
+      POSTGRES_USER: ${DB_USER:-anime_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-anime_user} -d ${DB_NAME:-anime_kage}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Backend API (Go). Run migrations once per deploy:
+  #   docker compose -f docker-compose.prod.yml --profile setup run --rm db-migrate
+  backend:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    container_name: anime-kage-backend
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=3000
+      - CORS_ORIGIN=${CORS_ORIGIN:-https://anime-kage.ro}
+      # closes registration behind a Discord-minted code
+      - INVITE_ONLY=${INVITE_ONLY:-false}
+      # password reset mail. Unset = links are logged, not sent.
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - MAIL_FROM=${MAIL_FROM}
+      # Rate limiting and abuse logs key on the client IP, which behind Caddy
+      # is only in X-Forwarded-For. Trusting the private ranges is safe here
+      # precisely because this service publishes no port: nothing outside the
+      # compose network can reach it, so the only thing that can set the header
+      # is Caddy. Remove this if the backend is ever exposed directly.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      # auto-translate; unset = the endpoint answers 503
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # GIF picker. Unset = the feature is simply off (endpoints 503, button hidden).
+      - GIPHY_API_KEY=${GIPHY_API_KEY}
+      # allowlist for iframe/content-link hosts; empty = any public https host
+      - CONTENT_HOSTS=${CONTENT_HOSTS}
+      # own-scanlation page storage; all-or-nothing, off if unset
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET=${R2_BUCKET}
+      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
+      - TRANSLATOR_RELEASE_CAP=${TRANSLATOR_RELEASE_CAP:-10}
+      # Subtitle-burn encode knobs. Passed through explicitly because
+      # compose only forwards what a service declares — setting these in .env
+      # alone does nothing, which is exactly the trap this comment exists to
+      # prevent. Empty is fine: the Go side treats empty as unset and applies its
+      # own default (veryfast + tune=animation, CRF 20).
+      - HARDSUB_PRESET=${HARDSUB_PRESET:-}
+      - HARDSUB_TUNE=${HARDSUB_TUNE:-}
+      - HARDSUB_CRF=${HARDSUB_CRF:-}
+      # How long a published release keeps its staged video (default 5m).
+      - PUBLISH_VIDEO_GRACE=${PUBLISH_VIDEO_GRACE:-}
+    volumes:
+      # Both of these MUST outlive the container. uploads/ holds avatars,
+      # curated artwork, scanlation pages and published subtitle tracks — the
+      # subtitle corpus is the one irreplaceable asset on the platform, and
+      # without a volume `up --build` would delete it. staging/ holds
+      # in-flight translator work, which is equally unrecoverable to whoever
+      # spent an evening on it.
+      - uploads_data:/app/uploads
+      - staging_data:/app/staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # One-shot schema migrations (backend-go/cmd/migrate)
+  db-migrate:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    profiles: ["setup"]
+    entrypoint: ["/app/migrate"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Catalog import from Jikan (backend-go/cmd/populate). A fresh database has an
+  # empty catalog, so this is part of first deploy, not an afterthought. Pass
+  # arguments after the service name:
+  #   … --profile setup run --rm populate -ids 5114,9253
+  #   … --profile setup run --rm populate -pages 20
+  populate:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    profiles: ["setup"]
+    entrypoint: ["/app/populate"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Cron jobs, same image, different entrypoints. Not long-running
+  # services — invoke them from the host crontab:
+  #   docker compose -f docker-compose.prod.yml --profile cron run --rm autoupdate
+  #   docker compose -f docker-compose.prod.yml --profile cron run --rm healthcheck
+  autoupdate:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    profiles: ["cron"]
+    entrypoint: ["/app/autoupdate", "all"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Source rot checker — re-resolves active sources so the stream
+  # endpoint can sort dead ones last.
+  healthcheck:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    profiles: ["cron"]
+    entrypoint: ["/app/healthcheck"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+      - CONTENT_HOSTS=${CONTENT_HOSTS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Offsite backup. Reads the payload on stdin, so the host script
+  # decides what a backup is:
+  #   … --profile backup run --rm -T r2backup -key backups/db/x.sql.gz -keep 30
+  r2backup:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    profiles: ["backup"]
+    entrypoint: ["/app/r2backup"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+      - JWT_SECRET=${JWT_SECRET}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET=${R2_BUCKET}
+      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
+
+  # Discord invite bot (backend-go/cmd/discordbot). Same image as the API —
+  # the Dockerfile builds ./cmd/... — just a different entrypoint. It talks
+  # only to Postgres and Discord, so it needs no JWT secret and no port.
+  discordbot:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    container_name: anime-kage-discordbot
+    entrypoint: ["/app/discordbot"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - DISCORD_INVITE_CHANNEL_ID=${DISCORD_INVITE_CHANNEL_ID}
+      - INVITE_TTL=${INVITE_TTL:-7d}
+      - INVITE_QUOTA_WINDOW=${INVITE_QUOTA_WINDOW:-24h}
+      # Anti-spam honeypot. Blank channel id = the feature is off entirely.
+      - DISCORD_PROTECTION_CHANNEL_ID=${DISCORD_PROTECTION_CHANNEL_ID}
+      - DISCORD_MUTED_ROLE_ID=${DISCORD_MUTED_ROLE_ID}
+      - DISCORD_PROTECTION_PURGE_WINDOW=${DISCORD_PROTECTION_PURGE_WINDOW:-5m}
+      - DISCORD_MOD_LOG_CHANNEL_ID=${DISCORD_MOD_LOG_CHANNEL_ID}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Frontend (SvelteKit adapter-node)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # baked into the client bundle: the public origin (Caddy proxies /api)
+        - VITE_API_URL=${PUBLIC_URL:-http://localhost}
+    container_name: anime-kage-frontend
+    environment:
+      # SSR load functions reach the backend over the docker network
+      - API_URL=http://backend:3000
+      # adapter-node ignores X-Forwarded-For unless told which header carries
+      # the client, so getClientAddress returned nginx's IP. Without this,
+      # every server-rendered request reaches the API from one address and the
+      # whole site shares a single per-IP rate-limit bucket.
+      # XFF_DEPTH=1 = exactly one proxy in front (nginx), so the last hop is
+      # trusted and anything a client sends itself is ignored.
+      - ADDRESS_HEADER=x-forwarded-for
+      - XFF_DEPTH=1
+      # adapter-node: public origin for correct absolute URLs / CSRF checks
+      - ORIGIN=${PUBLIC_URL:-http://localhost}
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      # 127.0.0.1, not localhost. Inside this image localhost resolves to ::1
+      # only, while adapter-node binds 0.0.0.0:3000 — IPv4 only. Probing
+      # localhost therefore gets "connection refused" and marks a perfectly
+      # healthy container unhealthy forever. The Go backend gets away with
+      # localhost because it binds dual-stack; this one does not.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Reverse Proxy (nginx). Replaced Caddy in July 2026: TLS terminates here on a
+  # Cloudflare Origin Certificate, so there is no ACME to run and no issued-cert
+  # state to persist — the certificate is a mounted file, not a volume. The old
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: anime-kage-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # substituted into nginx/default.conf.template at container start by the
+      # image's own envsubst entrypoint. Only this var is exported, so nginx's
+      # $host / $remote_addr / $request_uri survive substitution untouched.
+      - SITE_DOMAIN=${SITE_DOMAIN:-localhost}
+    volumes:
+      # `z` relabels for SELinux hosts (Fedora/RHEL), where a bind mount without
+      # it is silently unreadable inside the container ("permission denied" on a
+      # file that is plainly there). No-op on Debian/Ubuntu.
+      #
+      # Named default.conf.template on purpose: envsubst writes the result to
+      # /etc/nginx/conf.d/default.conf, overwriting the image's stock server
+      # block rather than leaving two of them listening on :80.
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro,z
+      # origin.pem + origin.key — the Cloudflare Origin Certificate. Replacing
+      # them is a file copy plus `docker compose exec nginx nginx -s reload`.
+      - ./nginx/certs:/etc/nginx/certs:ro,z
+      # HTTP basic-auth hashes for staging.${SITE_DOMAIN}. Gitignored.
+      - ./nginx/auth:/etc/nginx/auth:ro,z
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+  # ─── Monitoring ────────────────────────────────────────────────────────────
+  # None of these publish a port. Prometheus and the exporters are reachable
+  # only on the compose network; Grafana is served through nginx at /grafana.
+  # That keeps one authenticated entry point rather than four open ones.
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: anime-kage-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      # Bounded on BOTH axes: time alone is not a limit, because a metric with
+      # runaway label cardinality fills the disk long before 30 days pass.
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=6GB'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: anime-kage-grafana
+    environment:
+      # Served under a sub-path, so every asset URL and redirect it generates
+      # has to carry the prefix. Without SERVE_FROM_SUB_PATH the login page
+      # loads and its CSS 404s.
+      - GF_SERVER_ROOT_URL=${PUBLIC_URL:-http://localhost}/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?set GRAFANA_PASSWORD in .env}
+      # It is on the public internet: nobody signs themselves up, and
+      # anonymous viewers do not get to read the ops dashboards.
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Grafana phones home for update checks and the dashboard gallery.
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      # CSRF: Grafana rejects a POST whose Origin does not match the origin it
+      # believes it is served from. Behind a TLS-terminating proxy that check
+      # fails — nginx speaks plain HTTP to the container, so Grafana compares
+      # the browser's https origin against its own http view and refuses with
+      # "origin not allowed". Every dashboard query is a POST, so nothing loads.
+      #
+      # Naming the real public origin here is what makes the comparison agree.
+      - GF_SECURITY_CSRF_TRUSTED_ORIGINS=${SITE_DOMAIN:-localhost}
+      # Tells Grafana to believe the proxy's X-Forwarded-* headers, so it knows
+      # the request arrived over https in the first place.
+      - GF_SERVER_ENFORCE_DOMAIN=false
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      # Consumed by the provisioned contact point via $__env{}
+      - DISCORD_ALERT_WEBHOOK=${DISCORD_ALERT_WEBHOOK:?set DISCORD_ALERT_WEBHOOK in .env}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Provisioned from files so the datasource and dashboards survive a
+      # container recreate — nothing important lives only in the UI.
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro,z
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro,z
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: anime-kage-node-exporter
+    command:
+      - '--path.rootfs=/host'
+      # The host filesystem is mounted read-only; this is the standard set of
+      # pseudo-filesystems to skip so disk metrics describe real storage.
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run/credentials)($$|/)'
+      # Custom metrics written by host scripts (reboot-required-metric.sh).
+      # Read straight through the read-only /host mount, so no extra volume:
+      # the collector only ever reads these files.
+      - '--collector.textfile.directory=/host/var/lib/node_exporter/textfile'
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+
+  cadvisor:
+    # v0.49.1 spoke Docker API 1.41; this daemon requires 1.44 minimum, so the
+    # Docker factory never registered and cAdvisor fell back to raw cgroups —
+    # one series for the root cgroup, no container names, every panel empty.
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    container_name: anime-kage-cadvisor
+    command:
+      # cAdvisor defaults to collecting far more than a single-host setup
+      # needs; trimming keeps its own CPU cost near zero.
+      - '--housekeeping_interval=30s'
+      - '--docker_only=true'
+      - '--disable_metrics=percpu,sched,tcp,udp,advtcp,process,hugetlb,referenced_memory,cpu_topology,resctrl'
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: anime-kage-postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://${DB_USER:-anime_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-anime_kage}?sslmode=disable
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  nginx_logs:
+  prometheus_data:
+  grafana_data:
+  uploads_data:
+  staging_data:

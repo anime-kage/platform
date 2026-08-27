@@ -1,0 +1,41 @@
+# Scrape config for the Anime-Kage stack. Everything here is reached over the
+# compose network by service name — none of these targets is published to the
+# host, and only Grafana is routed by nginx.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    site: anime-kage
+
+scrape_configs:
+  # The API itself: request rate, latency and status per ROUTE PATTERN.
+  # This is the layer that shows a problem as users experience it — the rest
+  # tells you why.
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:3000']
+
+  # Host: CPU, memory, disk, filesystem fill, network.
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Per-container CPU and memory, so "which service is eating the box" has an
+  # answer without docker stats.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # Postgres: connections, transaction rates, locks, table and index sizes.
+  # The 2s watchlist query earlier this session would have been visible here
+  # long before anyone noticed the site was slow.
+  - job_name: postgres
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Prometheus watching itself — cheap, and it is the thing that tells you the
+  # others stopped reporting.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

@@ -1,0 +1,166 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: anime-kage
+    folder: Anime-Kage
+    interval: 1m
+    rules:
+      # Four rules on purpose. Each one means "go and look now"; adding more
+      # trains you to ignore the channel, which is worse than having none.
+
+      - uid: ak-api-down
+        title: API is down
+        condition: C
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          runbook: >-
+            Check the container: docker ps | grep backend
+            Then its logs: docker logs anime-kage-backend --tail 100
+            A restart loop is usually a failed DB connection or a missing env var.
+          summary: 'The backend has not answered a scrape for 2 minutes — the site is likely down.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: animekage-prom
+            model: { expr: 'up{job="backend"}', instant: true, refId: A }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: C
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+
+      - uid: ak-disk-full
+        noDataState: OK
+        title: Disk above 85%
+        condition: C
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          runbook: >-
+            Usual consumers: backups/ (30 days of dumps), bot/downloads/, Docker build cache.
+            Check with: docker system df
+            Reclaim the most with: docker builder prune
+          summary: 'Root filesystem is over 85% full. Postgres and the download pipeline both write here.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: animekage-prom
+            model:
+              expr: '100 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} * 100)'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: C
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+
+      - uid: ak-error-rate
+        noDataState: OK
+        title: 5xx error rate elevated
+        condition: C
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          runbook: >-
+            Open the Anime-Kage API dashboard, panel Responses by status class, to find the route.
+            Then: docker logs anime-kage-backend --tail 200
+          summary: 'The API is returning server errors. Check the API dashboard for which route.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: animekage-prom
+            model:
+              expr: 'sum(rate(animekage_http_requests_total{status=~"5.."}[5m])) or vector(0)'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: C
+              conditions:
+                - evaluator: { type: gt, params: [0.1] }
+
+      - uid: ak-pg-connections
+        noDataState: OK
+        title: Postgres connections above 80%
+        condition: C
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          runbook: >-
+            Look for stuck queries in pg_stat_activity, ordered by age, where state is not idle.
+            A long-running query holding connections is the usual cause.
+          summary: 'Connection pool is filling. At 100% the site stops serving entirely.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: animekage-prom
+            model:
+              expr: 'sum(pg_stat_activity_count) / max(pg_settings_max_connections) * 100 or vector(0)'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: C
+              conditions:
+                - evaluator: { type: gt, params: [80] }
+
+      # Fifth rule, and the reason it earns a place: everything above tells you
+      # something is broken NOW. This one is the opposite — it is the only alert
+      # that fires for something quietly rotting. The box ran 590 days on a
+      # December 2024 kernel because nothing ever asked for a restart; the
+      # pending-reboot flag was sitting there the whole time with 24 kernels'
+      # worth of security fixes installed but inert.
+      #
+      # Seven days, not immediately: kernel updates land roughly monthly and a
+      # reboot should be taken calmly at a quiet hour, not the moment apt runs.
+      - uid: ak-reboot-required
+        noDataState: OK
+        title: Reboot pending for over 7 days
+        condition: C
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          runbook: >-
+            Check what is waiting: cat /var/run/reboot-required.pkgs
+            Reboot takes about 25 seconds and everything comes back on its own
+            (docker is enabled, all containers are restart=unless-stopped, and
+            cf-origin-lock re-applies the origin firewall via its boot timer).
+            Quietest window is roughly 01:00-05:00 UTC.
+            The download script does NOT restart itself — start it again after:
+            cd /home/alexlv/bot && setsid nohup ./download_anime.py --workers 3
+            --stagger 20 --jitter 10 --skip-slugs gintama > /dev/null 2>&1 &
+            Then verify with /home/alexlv/post-reboot-check.sh
+          summary: 'A kernel or core library update has been waiting on a reboot for over a week. Until then the patched code is installed but not running.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: animekage-prom
+            model:
+              # Days pending. The `== 1` filter drops the series entirely when
+              # no reboot is needed, which with noDataState OK means silence.
+              expr: '(node_reboot_required == 1) * (time() - node_reboot_required_since_timestamp_seconds) / 86400'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: C
+              conditions:
+                - evaluator: { type: gt, params: [7] }

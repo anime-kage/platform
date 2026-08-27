@@ -1,0 +1,21 @@
+# Provisioned rather than added by hand, so the datasource survives a container
+# recreate and cannot be misconfigured in the UI.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: animekage-prom
+    # "proxy" = Grafana's BACKEND queries Prometheus over the compose network.
+    # With "direct" the browser would fetch http://prometheus:9090 itself — a
+    # hostname that only exists inside Docker and a different origin to the
+    # page, which is exactly the "origin not allowed" failure.
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Matches prometheus.yml's scrape_interval, so Grafana picks sensible
+      # step sizes instead of over-sampling.
+      timeInterval: 15s
+      httpMethod: POST
+    editable: false

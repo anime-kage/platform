@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets. This repository is PUBLIC — everything below has to hold first time,
+# because a secret pushed once is public forever, even if the next commit
+# removes it. Rotate anything that slips through; do not just delete it.
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.dev.example
+!.env.prod.example
+
+# TLS material for the origin. nginx/certs/origin.key is a real private key.
+# It was once untracked but NOT ignored, which means a single `git add -A`
+# would have committed it permanently. Cloudflare re-issues the pair if lost.
+nginx/certs/
+*.key
+*.pem
+!**/testdata/**/*.pem
+
+# Database dumps — real user rows and password hashes. Schema-only dumps
+# (cmd/migrate/migrations/*.sql) ARE tracked and belong here.
+*backup*.sql
+backups/
+*.db
+*.sqlite
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build output and dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+node_modules/
+.svelte-kit/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Go build artifacts (`go build -o` output; test caches live outside the tree)
+backend-go/api
+backend-go/staging/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime state — belongs on the server, never in git
+# ─────────────────────────────────────────────────────────────────────────────
+uploads/
+logs/
+*.log
+tmp/
+temp/
+pids/
+*.pid
+*.pid.lock
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editor, OS and agent noise
+# ─────────────────────────────────────────────────────────────────────────────
+# Editor/agent scratch backups (foo.go.bak). Kept on disk as a safety net, but
+# they duplicate tracked files and do not belong in history.
+*.bak
+*.bak-*
+*.backup
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Per-developer Claude Code settings. The shared guardrails live in
+#.claude/settings.json, which IS tracked.
+.claude/settings.local.json
+
+# HTTP basic-auth hashes for the staging site. A hash is still a credential.
+nginx/auth/

@@ -1,0 +1,41 @@
+{
+	"name": "frontend",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"check:browser": "node scripts/check-browser-target.mjs",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:unit": "vitest run --project unit",
+		"test:ui": "vitest run --project component"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-auto": "^7.0.0",
+		"@sveltejs/adapter-node": "^5.5.7",
+		"@sveltejs/kit": "^2.49.1",
+		"@sveltejs/vite-plugin-svelte": "^6.2.1",
+		"@testing-library/jest-dom": "^7.0.1",
+		"@testing-library/svelte": "^5.4.2",
+		"@testing-library/user-event": "^14.6.6",
+		"autoprefixer": "^10.4.23",
+		"happy-dom": "^20.11.6",
+		"postcss": "^8.5.6",
+		"svelte": "^5.45.6",
+		"svelte-check": "^4.3.4",
+		"typescript": "^5.9.3",
+		"vite": "^7.2.6",
+		"vitest": "^4.1.11"
+	},
+	"dependencies": {
+		"hls.js": "^1.6.16",
+		"sveltekit-superforms": "^2.29.1",
+		"zod": "^4.2.1"
+	}
+}

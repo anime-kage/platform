@@ -1,0 +1,99 @@
+# The project name is pinned rather than derived from the directory.
+#
+# Compose defaults it to the folder name, and BOTH compose files live in this
+# folder — so dev and prod were the same project. Running the dev stack here
+# replaced the production containers and, because `--build` tags images after
+# the project, overwrote the production frontend image with the Vite dev one.
+# The site 502'd: the container was still called anime-kage-frontend but ran
+# `vite dev` on 5173 while nginx proxies to 3000.
+#
+# With an explicit name the two stacks cannot see each other.
+name: anime-kage-dev
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: anime-kage-postgres-dev
+    environment:
+      POSTGRES_DB: anime_kage_dev
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d anime_kage_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API (Go). After code changes: docker compose restart backend
+  backend:
+    image: golang:1.25-alpine
+    container_name: anime-kage-backend-dev
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend-go:/app:Z
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+    environment:
+      - DATABASE_URL=postgresql://dev:dev_password@postgres:5432/anime_kage_dev
+      - JWT_SECRET=dev-jwt-secret-key
+      - PORT=3000
+      - CORS_ORIGIN=http://localhost:5173,http://localhost:4173
+      # Invite-only registration. Off in dev so signups keep
+      # working; `INVITE_ONLY=true docker compose -f … up` to rehearse the
+      # real launch flow.
+      - INVITE_ONLY=${INVITE_ONLY:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # ffmpeg: extract embedded soft-subs from uploaded video (installed each
+    # start since we run off the stock golang image, not a built one)
+    command: sh -c "apk add --no-cache ffmpeg >/dev/null 2>&1 && go run ./cmd/api"
+
+  # One-shot schema migrations (backend-go/cmd/migrate).
+  # Run manually: docker compose --profile setup run --rm db-init
+  db-init:
+    image: golang:1.25-alpine
+    working_dir: /app
+    profiles: ["setup"]
+    environment:
+      - DATABASE_URL=postgresql://dev:dev_password@postgres:5432/anime_kage_dev
+    volumes:
+      - ./backend-go:/app:Z
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: go run ./cmd/migrate
+
+  # Frontend (SvelteKit)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: anime-kage-frontend-dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app:Z
+      - /app/node_modules
+    environment:
+      # Browser-side API base (client fetches)
+      - VITE_API_URL=http://localhost:3000
+      # Server-side API base (SSR load functions, container-to-container)
+      - API_URL=http://backend:3000
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  postgres_dev_data:
+  go_mod_cache:
+  go_build_cache:

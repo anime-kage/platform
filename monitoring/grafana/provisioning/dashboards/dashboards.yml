@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: 'anime-kage'
+    orgId: 1
+    folder: 'Anime-Kage'
+    type: file
+    disableDeletion: false
+    # Re-read from disk, so editing a JSON file is enough to update a dashboard
+    # and nothing is lost when the container is recreated.
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

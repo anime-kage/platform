@@ -1,0 +1,226 @@
+/* ============================================================
+   Anime-Kage design tokens
+   Single source of truth for color, type, space, motion.
+   Edit here; the whole site follows.
+   ============================================================ */
+:root {
+  /* ---- Raw palette (from the logo) ----
+     Ink scale carries a cold blue undertone (hue of the logo blue/cyan)
+     so surfaces separate like the sketch instead of reading as flat black. */
+  --ink-900: #05070a;
+  --ink-850: #080b0f;
+  --ink-800: #0b0f14;
+  --ink-700: #12181f;
+  --ink-600: #1a222b;
+  --ink-500: #242e39;
+  --cyan: #36abb3;
+  --cyan-bright: #45c6cf;
+  --cyan-dim: #2e9299;
+  --blue: #1c38a8;
+  --blue-bright: #2a4fd4;
+
+  /* ---- Semantic color roles (use THESE in components) ---- */
+  --surface-base: var(--ink-800);     /* page background          */
+  --surface-raised: var(--ink-700);   /* cards, panels            */
+  --surface-overlay: var(--ink-600);  /* hover, popovers          */
+  --surface-inset: var(--ink-900);    /* inputs, wells            */
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(54, 171, 179, 0.45);
+
+  --text-primary: #f4f5f6;
+  --text-muted: #a6acb2;    /* ~7.8:1 on raised — safe for real content     */
+  /* --text-faint was #6c7177 = 3.6:1 on raised, under the 4.5:1 AA floor.
+     It is decoration only (rules, disabled, separators) — never put a fact
+     the reader needs in it. Lifted to ~5.6:1 so the ones already out there
+     are legible while they get migrated to --text-muted. */
+  --text-faint: #8b9199;
+
+  --accent: var(--cyan);              /* the scalpel: links, focus, active, ratings */
+  --accent-hover: var(--cyan-bright);
+  --accent-strong: var(--blue);       /* deeper secondary accent / hero gradients   */
+  --on-accent: #051417;               /* dark text on cyan fills (AA-passing)        */
+  --focus-ring: rgba(54, 171, 179, 0.5);
+
+  --danger: #e5484d;
+  --success: #46a758;
+  --warning: #f5a623;
+
+  /* ---- Typography ---- */
+  --font-display: 'Spectral', Georgia, 'Times New Roman', serif;
+  --font-body: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ---- Fluid type scale ----
+     Every step is fluid, not just the headings. The rule that matters:
+     the *minimum* of each clamp is the phone size, and no step's minimum
+     goes below 12px — under that, text stops being readable on a handset
+     no matter how nice it looks on a 24" monitor. Density is what should
+     drop on small screens (fewer columns, less chrome), never legibility.
+     Sizes are px-anchored at the 17px root: 0.706rem = 12px. */
+  --fs-display: clamp(2.5rem, 1.9rem + 2.8vw, 4.125rem);      /* landing hero      */
+  --fs-h1: clamp(1.75rem, 1.5rem + 1.2vw, 2.375rem);          /* page titles       */
+  --fs-h2: clamp(1.1875rem, 1.1rem + 0.4vw, 1.375rem);        /* section heads     */
+  --fs-h3: clamp(1.0625rem, 1.02rem + 0.22vw, 1.1875rem);     /* card/panel titles */
+  --fs-body: clamp(0.9375rem, 0.91rem + 0.14vw, 1.0625rem);   /* 16px → 18px       */
+  --fs-small: clamp(0.875rem, 0.855rem + 0.1vw, 0.9375rem);   /* 15px → 16px       */
+  --fs-caption: clamp(0.8125rem, 0.8rem + 0.07vw, 0.875rem);  /* 14px → 15px       */
+  --fs-micro: clamp(0.75rem, 0.735rem + 0.06vw, 0.8125rem);   /* 12.75px → 14px —
+                                                mono kickers/labels; the floor */
+
+  /* Minimum comfortable touch target. Apple/Google both say 44px; every
+     interactive control on a touch viewport should hit this. */
+  --tap-min: 44px;
+
+  --lh-tight: 1.1;
+  --lh-snug: 1.3;
+  --lh-normal: 1.6;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* ---- Spacing (4px base) ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --space-9: 6rem;
+
+  /* ---- Radius (small, restrained) ---- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* ---- Elevation (neutral shadows, never a colored glow) ---- */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.55);
+
+  /* ---- Motion ---- */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- Layout ----
+     Breakpoints are a fixed set — custom properties don't work inside
+     @media, so these live as a convention, not variables. Use THESE five
+     and nothing else; the site had 13 different ad-hoc values, which is
+     why the same element broke at different widths on different pages:
+       1400px  header tightens (search shrinks, nav padding drops)
+       1100px  chat stops docking and overlays instead
+       1080px  nav collapses to the burger
+        900px  side rails drop under the main column
+        640px  phone: single column, stacked forms
+        380px  small phone: the wordmark goes, mark carries the brand */
+  --container: 1240px;
+  --container-narrow: 880px;
+  --chat-w: 340px;
+  --header-h: 4rem;
+  --z-header: 100;
+  --z-overlay: 200;
+  --z-toast: 300;
+
+  color-scheme: dark;
+}
+
+/* ============================================================
+   Light theme (palette from the design sketch, accent kept in
+   the logo's cyan family but darkened for contrast on white).
+   Toggled by setting data-theme="light" on <html>.
+   ============================================================ */
+:root[data-theme='light'] {
+  --surface-base: #ebeef1;
+  --surface-raised: #f7f9fb;
+  --surface-overlay: #ffffff;
+  --surface-inset: #ffffff;
+
+  --border-subtle: rgba(18, 28, 38, 0.1);
+  --border-default: rgba(18, 28, 38, 0.2);
+  --border-strong: rgba(14, 140, 155, 0.5);
+
+  --text-primary: #16212b;
+  --text-muted: #5c6772;
+  --text-faint: #5f6873;    /* was #8c97a2 = 2.8:1 on white — unreadable */
+
+  --accent: #0c7d8b;        /* was #0e8c9b = 3.8:1 on raised; links failed AA */
+  --accent-hover: #0a6f7c;
+  --accent-strong: #1c38a8;
+  --on-accent: #ffffff;
+  --focus-ring: rgba(14, 140, 155, 0.35);
+
+  --success: #2e7a60;
+
+  --shadow-1: 0 1px 2px rgba(18, 28, 38, 0.12);
+  --shadow-2: 0 6px 16px rgba(18, 28, 38, 0.14);
+  --shadow-3: 0 16px 40px rgba(18, 28, 38, 0.18);
+
+  color-scheme: light;
+}
+
+/* ============================================================
+   Sakura theme — the third stop on the header toggle
+   (dark → light → sakura). NOT a light theme: the platform's
+   identity is dark and editorial, and a pale-pink page fought
+   it. This is the dark theme wearing cherry blossom — a deep
+   plum-black ground (warm where the default is cold blue) with a
+   petal-pink accent and warm off-white ink. Same restraint, same
+   contrast floor as the other two. Verified on raised (#22111b):
+     text-primary 16.0:1   text-muted 8.6:1
+     text-faint    5.0:1   accent    9.1:1  (faint is decoration only)
+   Toggled by data-theme="sakura" on <html>.
+   ============================================================ */
+:root[data-theme='sakura'] {
+  /* plum-tinted ink scale — the warm mirror of the default's cold blue,
+     so raw --ink-* users pick up the theme too */
+  --ink-900: #0c0509;
+  --ink-850: #120810;
+  --ink-800: #180b13;
+  --ink-700: #22111b;
+  --ink-600: #301a26;
+  --ink-500: #422636;
+
+  --surface-base: var(--ink-800);     /* deep plum-black page      */
+  --surface-raised: var(--ink-700);   /* cards lift, like the dark theme */
+  --surface-overlay: var(--ink-600);
+  --surface-inset: var(--ink-900);
+
+  --border-subtle: rgba(255, 214, 232, 0.08);
+  --border-default: rgba(255, 214, 232, 0.15);
+  --border-strong: rgba(242, 160, 194, 0.45);
+
+  --text-primary: #fbeef4;
+  --text-muted: #cca9ba;    /* warm mauve-grey — ~6:1 on raised          */
+  --text-faint: #9a7f8d;    /* decoration only, same rule as the default */
+
+  --accent: #f2a0c2;        /* petal pink; bright on the plum ground     */
+  --accent-hover: #f7bad3;
+  --accent-strong: #b34a7e; /* deeper rose for hero gradients            */
+  --on-accent: #2a0a17;     /* dark plum text on pink fills (AA-passing) */
+  --focus-ring: rgba(242, 160, 194, 0.5);
+
+  /* state colours: bright-on-dark, like the default dark theme */
+  --danger: #f2555b;
+  --success: #56b877;
+  --warning: #f5b342;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* Cover art is colour-graded toward the palette in every theme; on sakura the
+   posters get a gentle warm push toward the blossom accent. */
+:root[data-theme='sakura'] .media-tone {
+  filter: saturate(1.04) contrast(1.01) hue-rotate(-6deg);
+}

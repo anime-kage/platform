@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ro">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#0b0f14" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
+		<!-- Smart-TV polyfills. Must run before the module bundle is loaded.
+		     Vite's build target downlevels modern SYNTAX, but it cannot add
+		     missing runtime methods, and TV browsers are old: LG webOS 5 is
+		     Chromium 68, Samsung Tizen 5.5 is Chrome 69. Each of these is used
+		     by the bundle and absent there. Classic (non-module) script on
+		     purpose, so it runs even where type=module is unsupported.
+		     NB: do not name SvelteKit's head placeholder token in this file --
+		     only the FIRST occurrence is substituted, so mentioning it here
+		     consumed the real one and leaked this comment onto the page. -->
+		<script>
+			(function () {
+				if (typeof globalThis === 'undefined') {
+					// Chrome 71+. Defined via Object.defineProperty on the window
+					// so it behaves like the real thing (non-enumerable).
+					Object.defineProperty(Object.prototype, '__globalThis__', {
+						get: function () { return this; }, configurable: true
+					});
+					__globalThis__.globalThis = __globalThis__;
+					delete Object.prototype.__globalThis__;
+				}
+				if (!Object.hasOwn) {
+					// Chrome 93+.
+					Object.hasOwn = function (o, k) {
+						return Object.prototype.hasOwnProperty.call(o, k);
+					};
+				}
+				if (!String.prototype.replaceAll) {
+					// Chrome 85+. Only the string-needle case is polyfilled; a
+					// RegExp needle already requires the /g flag, which the
+					// native method enforces and split/join cannot express.
+					String.prototype.replaceAll = function (find, replace) {
+						if (Object.prototype.toString.call(find) === '[object RegExp]') {
+							return this.replace(find, replace);
+						}
+						return this.split(find).join(replace);
+					};
+				}
+			})();
+		</script>
+		<!-- apply saved theme before first paint (no flash) -->
+		<script>
+			try {
+				var t = localStorage.getItem('ak-theme');
+				if (t === 'light' || t === 'sakura')
+					document.documentElement.setAttribute('data-theme', t);
+			} catch (e) {}
+		</script>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<!-- Type system: Spectral (serif display), Hanken Grotesk (UI/body), IBM Plex Mono (meta/labels).
+		     TODO: self-host for production (perf + no FOUT). -->
+		<link
+			href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=Hanken+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+			rel="stylesheet"
+		/>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

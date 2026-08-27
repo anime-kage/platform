@@ -1,0 +1,129 @@
+# Staging. A full copy of the production stack, on the same box, with its own
+# database and its own secrets — reachable at staging.${SITE_DOMAIN}.
+#
+# What it is FOR: seeing a branch running as a real site before it reaches
+# members. `ak-deploy-staging <branch>` checks that branch out here and rebuilds.
+# Staging is a checkout target, not a branch, so it always shows exactly one
+# thing and nobody has to keep a `staging` branch in sync with `main`.
+#
+# The project name is pinned. Both other compose files live in this directory,
+# and Compose derives the project from the folder name — which is how running
+# the dev stack once took production down and overwrote its frontend image.
+name: anime-kage-staging
+
+services:
+  postgres-staging:
+    networks: [internal]
+    image: postgres:15
+    container_name: anime-kage-postgres-staging
+    environment:
+      POSTGRES_DB: ${DB_NAME:-anime_kage_staging}
+      POSTGRES_USER: ${DB_USER:-staging_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      # Project-prefixed, so this is anime-kage-staging_postgres_data and can
+      # never be confused with production's anime-kage_postgres_data.
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-staging_user} -d ${DB_NAME:-anime_kage_staging}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  backend-staging:
+    networks: [internal, web]
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    container_name: anime-kage-backend-staging
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-staging_user}:${DB_PASSWORD}@postgres-staging:5432/${DB_NAME:-anime_kage_staging}
+      # MUST differ from production. A shared secret would make a token minted
+      # on staging valid on the live site.
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=3000
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - INVITE_ONLY=${INVITE_ONLY:-false}
+      - PUBLIC_URL=${PUBLIC_URL}
+      # SMTP deliberately unset: with no host the Go side LOGS mail instead of
+      # sending it, so a password-reset test can never email a real member.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      - GIPHY_API_KEY=${GIPHY_API_KEY}
+      - CONTENT_HOSTS=${CONTENT_HOSTS}
+      - TRANSLATOR_RELEASE_CAP=${TRANSLATOR_RELEASE_CAP:-10}
+    volumes:
+      - uploads_data:/app/uploads
+      - staging_data:/app/staging
+    depends_on:
+      postgres-staging:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend-staging:
+    networks: [internal, web]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${PUBLIC_URL}
+    container_name: anime-kage-frontend-staging
+    environment:
+      - API_URL=http://backend-staging:3000
+      - ADDRESS_HEADER=x-forwarded-for
+      - XFF_DEPTH=1
+      - ORIGIN=${PUBLIC_URL}
+    depends_on:
+      - backend-staging
+    restart: unless-stopped
+    healthcheck:
+      # 127.0.0.1 not localhost — adapter-node binds IPv4 only, and localhost
+      # resolves to ::1 inside this image.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # One-shot migrations:
+  #   docker compose -f docker-compose.staging.yml --env-file .env.staging \
+  #     --profile setup run --rm db-migrate
+  db-migrate:
+    networks: [internal]
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    profiles: ["setup"]
+    # entrypoint, not command — the image's own entrypoint would start the API.
+    entrypoint: ["/app/migrate"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-staging_user}:${DB_PASSWORD}@postgres-staging:5432/${DB_NAME:-anime_kage_staging}
+    depends_on:
+      postgres-staging:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  uploads_data:
+  staging_data:
+
+networks:
+  # Staging's own private network. postgres-staging is ONLY here, so nothing in
+  # the production project can reach the staging database at all.
+  internal:
+
+  # Production's network, joined as EXTERNAL so `down` can never remove it —
+  # this is how nginx reaches staging. Service names are suffixed `-staging`
+  # because Compose registers the SERVICE NAME as an alias on every network it
+  # joins: plain `postgres` here resolved round-robin between staging's database
+  # and PRODUCTION's, and the only thing that stopped a cross-connection was the
+  # passwords differing.
+  web:
+    name: anime-kage_default
+    external: true

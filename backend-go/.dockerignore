@@ -1,0 +1,16 @@
+# Runtime data directories. In production these are named volumes
+# (uploads_data, staging_data) mounted over the image's own empty dirs, so a
+# host copy is never read — but `COPY . .` would still tar every byte into the
+# build context first. A dev staging/ of a few gigabytes turns a fast build
+# into a slow one for nothing.
+staging/
+uploads/
+
+# Secrets never belong in a build context.
+.env
+.env.*
+
+# Local database dumps.
+backups/
+
+.git/
