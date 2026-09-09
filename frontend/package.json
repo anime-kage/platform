@@ -27,7 +27,7 @@
 		"autoprefixer": "^10.4.23",
 		"happy-dom": "^20.11.6",
 		"postcss": "^8.5.28",
-		"svelte": "^5.45.6",
+		"svelte": "^5.57.0",
 		"svelte-check": "^4.3.4",
 		"typescript": "^5.9.3",
 		"vite": "^7.2.6",
