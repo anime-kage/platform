@@ -71,6 +71,31 @@ log_format redacted '$remote_addr - $remote_user [$time_local] '
 # have.
 resolver 127.0.0.11 valid=10s ipv6=off;
 
+# Per-client request limiting.
+#
+# Measured against the 2026-08-29 scan before choosing the numbers, because the
+# obvious knob is the wrong one: a browser opening a page fires ~50 requests in
+# one second for assets, and that scanner peaked at 42/s. Per-second rate does
+# not separate them at all.
+#
+# They separate cleanly on the sustained rate. Over that night the busiest real
+# visitor held 78 requests in a minute; the scanner held 2126 — 27x apart.
+#
+#   rate=3r/s  = 180/min, better than twice the busiest real visitor
+#   burst=120  absorbs a page-load spike whole, and nodelay serves it at once
+#              rather than queueing it, so nobody waits
+#
+# A scanner holding 20r/s gets its first 120 through and is then capped: the
+# 5268 requests it managed in four minutes would become roughly 840, every one
+# past the burst answered 429. That is also the signal ak-scanner-ban.sh reads
+# to promote an address into blocklist.conf.
+limit_req_zone $binary_remote_addr zone=perip:16m rate=3r/s;
+limit_req_status 429;
+
+# Addresses that ignored the limit long enough to be banned outright. Included
+# in http context so it covers every server block, staging included.
+include /etc/nginx/blocklist.conf;
+
 server {
     listen 80;
     listen [::]:80;
@@ -120,6 +145,11 @@ server {
     ssl_prefer_server_ciphers off;
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 1h;
+
+    # Applied at server level so it covers pages, assets and API alike. The
+    # scanner spent 2576 of its requests on "/", which the API limiter never
+    # sees — that path is the frontend's, not the backend's.
+    limit_req zone=perip burst=120 nodelay;
 
     server_tokens off;
 

@@ -30,21 +30,23 @@ import (
 // why these are named rather than inlined.
 const (
 	assFontName = "Noto Sans" // installed via font-noto; carries ș/ț with comma below
-	// ≈5.7% of frame height at PlayResY 1080. Chosen by rendering candidates over
-	// mid-grey and comparing: 54 with a 3px border read small and slightly muddy,
-	// and a bold weight read chunky. This is the size and weight Netflix and
-	// Crunchyroll both land on — larger than feels right in a still, correct at
-	// viewing distance and on a phone.
-	assFontSize = 62
+	// ≈6.7% of frame height at PlayResY 1080.
+	//
+	// Was 62 (5.7%), picked by rendering candidates over mid-grey. Side by side
+	// against Crunchyroll on a real episode it was visibly the smaller of the
+	// two, so it went up. Still not bold: the weight comes from the outline
+	// below, and a bold face at this size reads chunky.
+	assFontSize = 72
 	assPrimary  = "&H00FFFFFF"
 	assOutline  = "&H00000000"
 	assBack     = "&H80000000" // 50% black, for the shadow
-	// Not bold, and a *thinner* border than before. The outline is there to keep
-	// white legible over a white scene, not to be seen: 2.6 with a soft shadow
-	// under it keeps the glyph edges crisp, where 3 started to fill in the
-	// counters of a, e and o at this size.
-	assOutlineW = 2.6
-	assShadowW  = 1.4
+	// Scaled with the font, not left behind. These are ~4.2% and ~2.3% of the
+	// size, the same ratio that worked at 62 — a border that stays 2.6 while the
+	// glyphs grow reads proportionally thinner and the text loses its edge over
+	// a bright scene. The ceiling is still real: much past this and the border
+	// starts filling in the counters of a, e and o.
+	assOutlineW = 3.0
+	assShadowW  = 1.6
 	// ≈5% of frame height off the bottom. 40 sat close enough to the edge to
 	// collide with a player's control bar; this clears it and matches where the
 	// big streamers place the last line.

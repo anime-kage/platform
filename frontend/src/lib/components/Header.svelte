@@ -46,7 +46,8 @@
     { label: 'Manga', href: '/manga' },
     { label: 'Liste', href: '/liste' },
     { label: 'Cereri', href: '/cereri' },
-    { label: 'Comunitate', href: '/comunitate' }
+    { label: 'Comunitate', href: '/comunitate' },
+    { label: 'Arcade', href: '/arcade' }
   ];
 
   // team pages, shown only to roles that can actually open them: translators
@@ -426,9 +427,12 @@
 
   .avatar {
     width: 38px; height: 38px; cursor: pointer; font-size: 1rem;
-    border-radius: 26%; overflow: hidden; display: grid; place-items: center;
+    border-radius: var(--radius-pill); overflow: hidden; display: grid; place-items: center;
+    /* It is a <button>: without these the UA's own padding and border inset the
+       image, so the picture floated in the middle instead of filling the disc. */
+    padding: 0; border: 0; background: none; line-height: 0;
   }
-  .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; grid-area: 1 / 1; }
   .avatar.sm { width: 32px; height: 32px; font-size: 0.875rem; }
 
   .menu { width: 238px; }

@@ -45,22 +45,25 @@
   const PREVIEW = 6;
   const PAGE = 50;
 
-  type GapKind = 'source' | 'rosub';
+  // Only one gap list now. "Episoade fara subtitrare romana" was removed: it
+  // counted essentially the whole catalogue (38,255 of 38,256), which restates
+  // "the team has not subtitled everything yet" rather than reporting health.
+  // A number that is always alarming is one people stop reading, and it made
+  // the two real signals beside it easier to miss.
+  type GapKind = 'source';
   type GapView = { open: boolean; offset: number; episodes: AdminEpisodeGap[]; busy: boolean };
   const gaps = $state<Record<GapKind, GapView>>({
-    source: { open: false, offset: 0, episodes: [], busy: false },
-    rosub: { open: false, offset: 0, episodes: [], busy: false }
+    source: { open: false, offset: 0, episodes: [], busy: false }
   });
 
   const gapTotal = (k: GapKind) =>
-    k === 'source' ? (health?.missingSource.total ?? 0) : (health?.missingRoSub.total ?? 0);
+    health?.missingSource.total ?? 0;
 
   /** Rows on screen: the report's preview while collapsed, the fetched page after. */
   function shown(k: GapKind): AdminEpisodeGap[] {
     const g = gaps[k];
     if (g.open) return g.episodes;
-    const src = k === 'source' ? health?.missingSource.episodes : health?.missingRoSub.episodes;
-    return (src ?? []).slice(0, PREVIEW);
+    return (health?.missingSource.episodes ?? []).slice(0, PREVIEW);
   }
 
   async function loadGap(k: GapKind, offset: number) {
@@ -111,10 +114,6 @@
     <div class="stat" class:bad={health.missingSource.total > 0}>
       <span class="stat-n">{health.missingSource.total}</span>
       <span class="stat-l">episoade fără sursă</span>
-    </div>
-    <div class="stat" class:warn={health.missingRoSub.total > 0}>
-      <span class="stat-n">{health.missingRoSub.total}</span>
-      <span class="stat-l">episoade fără sub RO</span>
     </div>
   </div>
 
@@ -195,12 +194,6 @@
     'Episoade fără sursă funcțională',
     'Toate episoadele au cel puțin o sursă care răspunde.'
   )}
-
-{@render gapSection(
-    'rosub',
-    'Episoade fără subtitrare română',
-    'Fiecare episod are o subtitrare română publicată.'
-  )}
 {/if}
 
 <style>
@@ -257,7 +250,6 @@
     letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted);
   }
   .stat.bad .stat-n { color: var(--danger); }
-  .stat.warn .stat-n { color: var(--warning); }
 
   .block { margin-bottom: var(--space-6); }
   .block > .kicker { display: block; margin-bottom: var(--space-3); }

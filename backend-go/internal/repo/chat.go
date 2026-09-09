@@ -14,7 +14,7 @@ import (
 )
 
 const chatCols = `m.id, m.body, m.reply_to_user, m.reply_to_excerpt, m.reply_to_id, m.created_at,
-	u.id AS user_id, u.username, u.role, u.avatar_url`
+	u.id AS user_id, u.username, u.role, u.avatar_url, m.pinned_at`
 
 // RecentChatMessages returns the newest messages oldest-first — the order the
 // panel renders. Deleted rows are tombstones and never come back.
@@ -154,4 +154,67 @@ func (r *Repo) PurgeExpiredChatRestrictions(ctx context.Context) (int64, error) 
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// ── Pinned message ──────────────────────────────────────────────────────────
+
+// PinChatMessage moves the pin to one message.
+//
+// Clearing the old pin and setting the new one happen in a transaction because
+// the database allows only one pinned row at a time (see 0068). Doing it in two
+// statements outside a transaction would leave a window where the room has no
+// pin, and a failure halfway would leave it with none at all.
+func (r *Repo) PinChatMessage(ctx context.Context, id int64, byUserID int) (*model.ChatMessage, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE chat_messages SET pinned_at = NULL, pinned_by = NULL
+		  WHERE pinned_at IS NOT NULL`); err != nil {
+		return nil, err
+	}
+	// Deleted messages are tombstones; pinning one would hold an empty slot at
+	// the top of the room that nobody can see or clear.
+	tag, err := tx.Exec(ctx,
+		`UPDATE chat_messages SET pinned_at = now(), pinned_by = $2
+		  WHERE id = $1 AND deleted_at IS NULL`, id, byUserID)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.PinnedChatMessage(ctx)
+}
+
+// UnpinChatMessage clears the pin. Clearing an already-clear pin is not an
+// error: two moderators pressing unpin at once should both see it gone.
+func (r *Repo) UnpinChatMessage(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE chat_messages SET pinned_at = NULL, pinned_by = NULL
+		  WHERE pinned_at IS NOT NULL`)
+	return err
+}
+
+// PinnedChatMessage returns the pinned message, or nil when the room has none.
+func (r *Repo) PinnedChatMessage(ctx context.Context) (*model.ChatMessage, error) {
+	var m model.ChatMessage
+	err := pgxscan.Get(ctx, r.pool, &m, `
+		SELECT `+chatCols+`
+		FROM chat_messages m JOIN users u ON u.id = m.user_id
+		WHERE m.pinned_at IS NOT NULL AND m.deleted_at IS NULL
+		LIMIT 1`)
+	if err != nil {
+		if pgxscan.NotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
 }

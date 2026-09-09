@@ -224,3 +224,36 @@
 :root[data-theme='sakura'] .media-tone {
   filter: saturate(1.04) contrast(1.01) hue-rotate(-6deg);
 }
+
+/* ---- Large displays ------------------------------------------------------
+   The scale above only ever went down. Every breakpoint in this file is a
+   max-width, so 1240px was both the design's comfortable width and its ceiling,
+   and a 2560px display drew the whole site as an island with roughly 660px of
+   dead margin on either side.
+
+   Two steps, and a small lift to the type with the first. Widening the column
+   alone would only fit more in, which is not what a page feels like when it
+   looks too small: body text was already clamped at its 17px maximum long
+   before this width, so it has to be told it may grow. */
+@media (min-width: 1600px) {
+  :root {
+    --container: 1440px;
+    /* The profile pages are the only users of this one, and they are panels of
+       stats rather than prose, so they can take the extra width. The review
+       pages deliberately keep their own narrower measure: those are read
+       start to finish and a long line is harder work. */
+    --container-narrow: 1040px;
+    --fs-body: 1.125rem;      /* 18px */
+    --fs-small: 1rem;         /* 16px */
+    --fs-caption: 0.9375rem;  /* 15px */
+  }
+}
+
+@media (min-width: 2100px) {
+  :root {
+    --container: 1600px;
+    --container-narrow: 1140px;
+    --fs-body: 1.1875rem;     /* 19px */
+    --fs-h1: 2.625rem;
+  }
+}

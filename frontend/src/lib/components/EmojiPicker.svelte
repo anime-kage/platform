@@ -26,7 +26,7 @@
   let searchEl = $state<HTMLInputElement | null>(null);
   let pos = $state({ top: 0, left: 0 });
 
-  const POP_W = 312;
+  const POP_W = 340;
   const POP_H = 324;
 
   /* An uploaded emote's "glyph" is an image path, not a character. Without this
@@ -300,15 +300,18 @@
     color: var(--text-muted);
   }
 
+  /* Eight fixed columns in a 312px popup left ~35px cells around 24px art,
+     which is too small to tell similar emotes apart at a glance. auto-fill
+     keeps every row full whatever the popup width ends up being. */
   .grid {
     display: grid;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
-    gap: 2px;
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+    gap: 3px;
   }
 
   /* Same fixed height as chat, so the picker previews the real thing. */
   .emote-img {
-    height: 24px; width: auto; max-width: 100%;
+    height: 38px; width: auto; max-width: 100%;
     object-fit: contain; display: block; margin: 0 auto;
   }
 
@@ -319,7 +322,7 @@
     aspect-ratio: 1;
     display: grid;
     place-items: center;
-    font-size: 1.125rem;
+    font-size: 1.5rem;
     line-height: 1;
     cursor: pointer;
     transition: background 0.12s, transform 0.12s;

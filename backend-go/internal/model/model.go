@@ -678,6 +678,9 @@ type ChatMessage struct {
 	Username       string    `db:"username" json:"username"`
 	Role           string    `db:"role" json:"role"`
 	AvatarURL      *string   `db:"avatar_url" json:"avatarUrl,omitempty"`
+	// Set only on the one pinned message. The client uses its presence rather
+	// than a separate flag, so a pin cannot disagree with the message it is on.
+	PinnedAt *time.Time `db:"pinned_at" json:"pinnedAt,omitempty"`
 }
 
 // ChatRestriction is a live-chat timeout or ban — the room's own mute list,

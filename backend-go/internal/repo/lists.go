@@ -36,11 +36,18 @@ func (r *Repo) Watchlist(ctx context.Context, userID int, status string) ([]mode
 	q := `
 		SELECT w.id, w.user_id, w.anime_id, w.status, w.score, w.episodes_watched,
 		       w.notes, w.started_at, w.completed_at, w.updated_at,
-		       (SELECT count(*) FROM (` + playableEpisodes + `) p
-		         WHERE p.anime_id = w.anime_id) AS available_episodes,
-		       (SELECT min(p.episode_number) FROM (` + playableEpisodes + `) p
-		         WHERE p.anime_id = w.anime_id
-		           AND p.episode_number > w.episodes_watched) AS next_episode,
+		       -- The anime_id filter lives INSIDE these subqueries rather than
+		       -- outside a derived table, so the platform-wide playable list is
+		       -- never built just to be thrown away.
+		       (SELECT count(*) FROM episodes pe
+		         WHERE pe.anime_id = w.anime_id
+		           AND EXISTS (SELECT 1 FROM content_links cl
+		                        WHERE cl.episode_id = pe.id AND cl.is_active)) AS available_episodes,
+		       (SELECT min(pe.episode_number) FROM episodes pe
+		         WHERE pe.anime_id = w.anime_id
+		           AND pe.episode_number > w.episodes_watched
+		           AND EXISTS (SELECT 1 FROM content_links cl
+		                        WHERE cl.episode_id = pe.id AND cl.is_active)) AS next_episode,
 		       ` + animeCols("a", "anime.") + `
 		FROM watchlist w
 		JOIN anime a ON a.id = w.anime_id
@@ -69,11 +76,24 @@ func (r *Repo) Watchlist(ctx context.Context, userID int, status string) ([]mode
 // touched: if you did not finish it, you resume it at your position; if you
 // did, you get the next one you have not seen. A series with nothing left to
 // play drops out rather than showing a dead card.
+// HideFromContinue dismisses a series from the "continue watching" shelf.
+//
+// Upsert with a refreshed timestamp rather than insert-if-missing: dismissing a
+// series that came back after new activity has to hide it again, and an
+// ON CONFLICT DO NOTHING would silently leave the old, already-expired stamp in
+// place so the row never disappeared.
+func (r *Repo) HideFromContinue(ctx context.Context, userID, animeID int) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO continue_hidden (user_id, anime_id, hidden_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (user_id, anime_id) DO UPDATE SET hidden_at = now()`, userID, animeID)
+	return err
+}
+
 func (r *Repo) ContinueWatching(ctx context.Context, userID, limit int) ([]model.ContinueEntry, error) {
 	rows := []model.ContinueEntry{}
 	err := pgxscan.Select(ctx, r.pool, &rows, `
-		WITH playable AS (`+playableEpisodes+`
-		),
+		WITH
 		-- the episode most recently played per series, whatever its number:
 		-- "where was I" is a question about time, not about episode order
 		last_pos AS (
@@ -89,6 +109,22 @@ func (r *Repo) ContinueWatching(ctx context.Context, userID, limit int) ([]model
 			SELECT anime_id FROM last_pos
 			UNION
 			SELECT anime_id FROM watchlist WHERE user_id = $1 AND status = 'watching'
+		),
+		-- Restricted to the series this player could possibly be shown, which is
+		-- why cand is built first. Unrestricted it materialised the playable list
+		-- for the WHOLE platform -- 38k episodes probed against 420k content_links,
+		-- ~100ms measured -- to count episodes for the handful of series one person
+		-- is watching, then got scanned again per candidate. Every use of playable
+		-- below is already keyed to an anime_id drawn from cand, so narrowing it
+		-- here changes the cost and not the result.
+		playable AS (
+			SELECT pe.id, pe.anime_id, pe.episode_number
+			FROM episodes pe
+			WHERE pe.anime_id IN (SELECT anime_id FROM cand)
+			  AND EXISTS (
+				SELECT 1 FROM content_links cl
+				WHERE cl.episode_id = pe.id AND cl.is_active
+			  )
 		)
 		SELECT `+animeCols("a", "anime.")+`,
 		       coalesce(rp.id, np.id)                         AS episode_id,
@@ -107,6 +143,7 @@ func (r *Repo) ContinueWatching(ctx context.Context, userID, limit int) ([]model
 		JOIN anime a ON a.id = c.anime_id
 		LEFT JOIN last_pos lp ON lp.anime_id = c.anime_id
 		LEFT JOIN watchlist w ON w.user_id = $1 AND w.anime_id = c.anime_id
+		LEFT JOIN continue_hidden ch ON ch.user_id = $1 AND ch.anime_id = c.anime_id
 		-- resume: the episode you stopped part-way through, if it still plays
 		LEFT JOIN playable rp
 		       ON rp.id = lp.episode_id
@@ -124,7 +161,23 @@ func (r *Repo) ContinueWatching(ctx context.Context, userID, limit int) ([]model
 			LIMIT 1
 		) np ON true
 		WHERE coalesce(rp.id, np.id) IS NOT NULL
-		ORDER BY last_activity DESC
+		  -- A dropped series is not something you are continuing. It can still
+		  -- reach cand through last_pos, since the playback rows outlive the
+		  -- decision to stop, so it has to be excluded here rather than there.
+		  AND coalesce(w.status, '') <> 'dropped'
+		  -- Dismissed from the shelf, and still dismissed only while nothing
+		  -- newer has happened. The greatest() is repeated rather than reusing
+		  -- the last_activity alias because WHERE cannot see select aliases.
+		  AND (ch.hidden_at IS NULL OR ch.hidden_at < greatest(
+		        coalesce(lp.updated_at, to_timestamp(0)),
+		        coalesce(w.updated_at AT TIME ZONE 'UTC', to_timestamp(0))))
+		-- anime_id breaks the tie, and it has to break one: a bulk watchlist
+		-- import gives every row the same updated_at to the microsecond, so
+		-- without it the LIMIT keeps an arbitrary few of the tied rows and the
+		-- shelf silently reshuffles whenever the planner picks a different
+		-- shape. Stable beats prettier here -- the user is looking for the row
+		-- that was in that spot yesterday.
+		ORDER BY last_activity DESC, c.anime_id
 		LIMIT $2`, userID, limit, WatchedFraction)
 	if err != nil {
 		return nil, err

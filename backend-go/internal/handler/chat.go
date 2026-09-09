@@ -85,8 +85,17 @@ func (h *Handler) chatMessages(w http.ResponseWriter, r *http.Request) {
 		httpx.Internal(w, "fetch chat messages", err)
 		return
 	}
+	// The pin travels with the backlog rather than on its own endpoint: a client
+	// that has just connected needs both to render the room, and two requests
+	// would let it paint messages before the pinned bar appears.
+	pinned, err := h.repo.PinnedChatMessage(r.Context())
+	if err != nil {
+		httpx.Internal(w, "fetch pinned message", err)
+		return
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"data":    msgs,
+		"pinned":  pinned,
 		"viewers": h.chat.viewerCount(),
 	})
 }
@@ -200,6 +209,22 @@ func (h *Handler) chatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	// Lift the server's WriteTimeout for this one handler.
+	//
+	// WriteTimeout (60s in cmd/api) sets an absolute deadline when the response
+	// starts, which a long-lived SSE stream can never live inside. The deadline
+	// passed silently at t=60 and the failure only surfaced at the next write,
+	// the 25s ping at t=75 -- which is why every chat connection lasted almost
+	// exactly 75 seconds and nginx logged 1,301 "upstream prematurely closed"
+	// errors a day. The pings kept nginx from reaping the stream but could not
+	// beat our own deadline. Same pattern as the upload handler in releases.go;
+	// the zero time means no deadline at all.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		// Not fatal: without it the stream still works, it just gets cut at the
+		// first ping past the deadline, exactly as it did before.
+		slog.Warn("chat stream: could not lift the write deadline", "err", err)
+	}
+
 	ch, unsubscribe := h.subscribeChat()
 	// Defers run LIFO, so this pair must be registered in this order: the
 	// viewer has to be removed from the hub *before* we broadcast the new
@@ -281,4 +306,40 @@ func (h *Handler) PurgeOldChat(ctx context.Context) {
 	} else if n > 0 {
 		slog.Info("purged lapsed chat timeouts", "deleted", n)
 	}
+}
+
+// ── Pinning ─────────────────────────────────────────────────────────────────
+
+// POST /api/chat/messages/{id}/pin — hold one message at the top of the room.
+//
+// Staff only, gated by the same chatModRoles as timeouts: the people reading
+// the room at 2am are the ones who need to pin the release announcement. There
+// is no rank rule here, unlike restrictions, because pinning a message is not
+// an action against its author.
+func (h *Handler) pinChatMessage(w http.ResponseWriter, r *http.Request) {
+	u := middleware.UserFrom(r)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id < 1 {
+		httpx.Error(w, http.StatusBadRequest, "Mesaj invalid")
+		return
+	}
+	msg, err := h.repo.PinChatMessage(r.Context(), id, u.UserID)
+	if err != nil {
+		notFoundOr(w, err, "Mesajul nu există", "pin chat message")
+		return
+	}
+	h.publishChat("pin", msg)
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": msg})
+}
+
+// DELETE /api/chat/pin — clear the pin. No id: the room has at most one.
+func (h *Handler) unpinChatMessage(w http.ResponseWriter, r *http.Request) {
+	if err := h.repo.UnpinChatMessage(r.Context()); err != nil {
+		httpx.Internal(w, "unpin chat message", err)
+		return
+	}
+	// A null payload is the "there is no pin" state, so the client clears the
+	// bar from the same event it would use to fill it.
+	h.publishChat("pin", nil)
+	w.WriteHeader(http.StatusNoContent)
 }

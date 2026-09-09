@@ -299,6 +299,7 @@ func (h *Handler) Routes() http.Handler {
 			r.Put("/{id}/verifier", h.assignVerifier)
 			r.Get("/{id}", h.getRelease)
 			r.Get("/{id}/events", h.releaseEvents)
+			r.Post("/{id}/events", h.appendReleaseEvent)
 			r.Put("/{id}/events/{idx}", h.updateReleaseEvent)
 			r.With(contentRole).Post("/{id}/translate", h.translateRelease)
 			r.Get("/{id}/translate/status", h.translationStatusHandler)
@@ -341,6 +342,14 @@ func (h *Handler) Routes() http.Handler {
 			r.Delete("/messages/{id}", h.deleteChatMessage)
 			r.Get("/stream", h.chatStream)
 
+			// Pinning rides the same staff gate as timeouts: whoever is trusted
+			// to quiet the room is trusted to hold one message at the top of it.
+			// Gated per-route rather than in a sub-router, because these live at
+			// /chat/... and nesting them under /restrictions put them behind a
+			// prefix the client never calls.
+			r.With(chatModRole).Post("/messages/{id}/pin", h.pinChatMessage)
+			r.With(chatModRole).Delete("/pin", h.unpinChatMessage)
+
 			// timeouts/bans scoped to this room only — never the account
 			r.Route("/restrictions", func(r chi.Router) {
 				r.Use(chatModRole)
@@ -381,6 +390,21 @@ func (h *Handler) Routes() http.Handler {
 			r.With(importRole).Post("/", h.createScheduleSlot)
 			r.With(importRole).Put("/{id}", h.updateScheduleSlot)
 			r.With(importRole).Delete("/{id}", h.deleteScheduleSlot)
+		})
+
+		// Arcade. Members only, like the rest of the catalogue: the puzzles are
+		// built from it, and a guess has to be attributable to award anything.
+		r.Route("/games", func(r chi.Router) {
+			r.Use(requireAuth)
+			r.Get("/board", h.gamesBoard)
+			r.Post("/faction", h.gamesSetFaction)
+			r.Post("/chest", h.gamesClaimChest)
+			r.Post("/puzzles/{id}/guess", h.gamesGuess)
+			r.Post("/puzzles/{id}/hint", h.gamesHint)
+			r.Get("/characters", h.gamesCharSearch)
+			r.Get("/leaderboard", h.gamesLeaderboard)
+			r.Post("/puzzles/{id}/characters", h.gamesSubmitChars)
+			r.Post("/puzzles/{id}/groups", h.gamesSubmitGroups)
 		})
 
 		// custom chat emotes. Any member reads them (the chat renders them and
@@ -479,6 +503,7 @@ func (h *Handler) Routes() http.Handler {
 				r.Put("/banner", h.setMyBanner)
 
 				r.Get("/continue", h.myContinueWatching)
+				r.Delete("/continue/{animeId}", h.hideFromContinue)
 
 				r.Get("/watchlist", h.myWatchlist)
 				r.Post("/watchlist", h.upsertWatchlist)

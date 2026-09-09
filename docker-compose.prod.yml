@@ -196,6 +196,12 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
       - DISCORD_INVITE_CHANNEL_ID=${DISCORD_INVITE_CHANNEL_ID}
+      # Game rooms. Blank means the commands answer anywhere, which is not
+      # what you want on a server with other channels in it.
+      - DISCORD_GACHA_CHANNEL_ID=${DISCORD_GACHA_CHANNEL_ID}
+      - DISCORD_HUNT_CHANNEL_ID=${DISCORD_HUNT_CHANNEL_ID}
+      # DISCORD_UNLIMITED_IDS is deliberately absent: it bypasses every game
+      # cooldown and belongs only on staging.
       - INVITE_TTL=${INVITE_TTL:-7d}
       - INVITE_QUOTA_WINDOW=${INVITE_QUOTA_WINDOW:-24h}
       # Anti-spam honeypot. Blank channel id = the feature is off entirely.
@@ -273,6 +279,11 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro,z
       # HTTP basic-auth hashes for staging.${SITE_DOMAIN}. Gitignored.
       - ./nginx/auth:/etc/nginx/auth:ro,z
+      # Scanner bans, written by /usr/local/sbin/ak-scanner-ban.sh on the host.
+      # The script rewrites this file IN PLACE rather than replacing it: a bind
+      # mount of a single file follows the inode, so a mv would leave nginx
+      # reading the old, unlinked file for ever.
+      - ./nginx/blocklist.conf:/etc/nginx/blocklist.conf:ro,z
       - nginx_logs:/var/log/nginx
     depends_on:
       - frontend

@@ -199,7 +199,37 @@
     r.medium === 'manga' ? `capitolul ${r.chapterNumber}` : `episodul ${r.episodeNumber}`;
 
   // ── per-card working state, keyed by release id ────────────────────────────
-  type SourceRow = { url: string; kind: 'embed' | 'extract' };
+  type SourceRow = { url: string; kind: 'embed' | 'extract'; provider?: string };
+
+  // Which extractor a host needs. Mirrors resolver.Default() in the backend
+  // (Direct, Filemoon, DoodStream, VTBE, Luluvdo); a name not registered there
+  // is rejected on save.
+  const extractProviders = ['vtbe', 'doodstream', 'filemoon', 'luluvdo', 'direct'];
+
+  // Guess the extractor from the URL, so the common case needs no thought.
+  //
+  // This form used to send provider: 'direct' for every extract source, and
+  // 'direct' means "the URL IS the video file". Pasting a host page therefore
+  // failed validation with a message about needing a .mp4, and there was no
+  // control anywhere on this page to say otherwise: picking "player propriu"
+  // could not work for any real host. Matching on the first host label is the
+  // same rule the backend uses for embed URLs.
+  function providerFor(url: string): string {
+    let host: string;
+    try {
+      host = new URL(url.trim()).hostname.toLowerCase();
+    } catch {
+      return '';
+    }
+    const path = url.split('?')[0].split('#')[0].toLowerCase();
+    if (path.endsWith('.mp4') || path.endsWith('.m3u8')) return 'direct';
+    const base = host.replace(/^www\./, '').split('.')[0];
+    if (base === 'vtbe') return 'vtbe';
+    if (base === 'filemoon' || base === 'moonplayer') return 'filemoon';
+    if (base === 'playmogo' || base.startsWith('dood')) return 'doodstream';
+    if (base === 'luluvdo') return 'luluvdo';
+    return '';
+  }
   type CardState = {
     // the card follows its release's medium: anime→episode+sources, manga→chapter
     medium: 'anime' | 'manga';
@@ -371,7 +401,9 @@
                     hostingUrl: s.url.trim(),
                     kind: s.kind,
                     // 'direct' extract sources point straight at the file — the URL is the ref
-                    ...(s.kind === 'extract' ? { provider: 'direct', providerRef: s.url.trim() } : {})
+                    ...(s.kind === 'extract'
+                      ? { provider: s.provider || providerFor(s.url), providerRef: s.url.trim() }
+                      : {})
                   }))
                 : undefined
             }
@@ -603,14 +635,14 @@
                     </div>
                   {/if}
 
-                  {#if c.medium === 'anime'}
+                  {#if c.medium === 'anime' && rel.hasVideo}
                   {@const hs = hardsub[rel.id]}
                   <div class="dl">
                     <span class="f-label">1 · Descarcă pentru host</span>
                     <div class="dl-row">
-                      <a class="dl-btn primary" href={api.fileUrl(`/api/releases/${rel.id}/download.mp4`)}>⬇ Video pentru host (.mp4)</a>
-                      <a class="dl-btn" href={api.fileUrl(`/api/releases/${rel.id}/download`)}>⬇ Video + subtitrare RO (.mkv)</a>
-                      <a class="dl-btn" href={api.fileUrl(`/api/releases/${rel.id}/subtitle.srt`)}>⬇ Subtitrare (.srt)</a>
+                      <a target="_blank" rel="noopener" class="dl-btn primary" href={api.fileUrl(`/api/releases/${rel.id}/download.mp4`)}>⬇ Video pentru host (.mp4)</a>
+                      <a target="_blank" rel="noopener" class="dl-btn" href={api.fileUrl(`/api/releases/${rel.id}/download`)}>⬇ Video + subtitrare RO (.mkv)</a>
+                      <a target="_blank" rel="noopener" class="dl-btn" href={api.fileUrl(`/api/releases/${rel.id}/subtitle.srt`)}>⬇ Subtitrare (.srt)</a>
                     </div>
 
                     <!-- Optional: burn the RO track into the picture. Needed only
@@ -649,7 +681,7 @@
                           {hardsubBusy === rel.id ? '…' : '■ Oprește embedul'}
                         </button>
                       {:else if hs.state === 'done'}
-                        <a class="dl-btn primary" href={api.fileUrl(`/api/releases/${rel.id}/download.hardsub.mp4`)}>
+                        <a target="_blank" rel="noopener" class="dl-btn primary" href={api.fileUrl(`/api/releases/${rel.id}/download.hardsub.mp4`)}>
                           ⬇ Video cu subtitrare embedată (.mp4)
                         </a>
                         <button class="dl-btn" type="button" disabled={hardsubBusy === rel.id} onclick={() => startHardsub(rel)}>
@@ -668,9 +700,26 @@
                         <div class="field kind">
                           <select bind:value={src.kind}>
                             <option value="embed">embed (iframe)</option>
-                            <option value="extract">direct (player propriu)</option>
+                            <option value="extract">player propriu (cu subtitrare RO)</option>
                           </select>
                         </div>
+                        {#if src.kind === 'extract'}
+                          <!-- Shown rather than inferred silently: a guess the publisher
+                               cannot see or correct is worse than one more field. -->
+                          <div class="field prov">
+                            <select
+                              value={src.provider || providerFor(src.url)}
+                              onchange={(e) => (src.provider = e.currentTarget.value)}
+                            >
+                              {#if !src.provider && !providerFor(src.url)}
+                                <option value="" disabled selected>alege extractorul</option>
+                              {/if}
+                              {#each extractProviders as p (p)}
+                                <option value={p}>{p}</option>
+                              {/each}
+                            </select>
+                          </div>
+                        {/if}
                         {#if c.sources.length > 1}
                           <button class="rm" title="Scoate sursa" onclick={() => c.sources.splice(i, 1)}>×</button>
                         {/if}
@@ -730,9 +779,9 @@
                        out, so offering to spend ten minutes of CPU on a file that
                        is about to be deleted would be offering a trap. -->
                   <div class="prow-dl">
-                    <a class="dl-btn sm" href={api.fileUrl(`/api/releases/${rel.id}/download.mp4`)}>⬇ .mp4 pentru host</a>
-                    <a class="dl-btn sm" href={api.fileUrl(`/api/releases/${rel.id}/download`)}>⬇ .mkv cu subtitrare</a>
-                    <a class="dl-btn sm" href={api.fileUrl(`/api/releases/${rel.id}/subtitle.srt`)}>⬇ .srt</a>
+                    <a target="_blank" rel="noopener" class="dl-btn sm" href={api.fileUrl(`/api/releases/${rel.id}/download.mp4`)}>⬇ .mp4 pentru host</a>
+                    <a target="_blank" rel="noopener" class="dl-btn sm" href={api.fileUrl(`/api/releases/${rel.id}/download`)}>⬇ .mkv cu subtitrare</a>
+                    <a target="_blank" rel="noopener" class="dl-btn sm" href={api.fileUrl(`/api/releases/${rel.id}/subtitle.srt`)}>⬇ .srt</a>
                     <span class="pr-grace">videoul se șterge la scurt timp după publicare · subtitrarea rămâne</span>
                   </div>
                 {/if}
@@ -830,7 +879,8 @@
   .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .field.grow { flex: 1; min-width: 220px; }
   .field.num { width: 6.5rem; }
-  .field.kind { width: 13rem; }
+  .field.kind { width: 15rem; }
+  .field.prov { width: 9rem; }
   .f-label {
     font-family: var(--font-mono); font-size: var(--fs-micro);
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted);

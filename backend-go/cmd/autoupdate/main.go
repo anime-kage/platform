@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -327,6 +328,33 @@ func fillSlugs(ctx context.Context, r *repo.Repo) error {
 // too expensive to run nightly, and titles rarely change once known. The
 // per-series button in /admin/anime/{id} covers the common single case; this is
 // the bulk tool for after a large import.
+// episodesFromAniList turns AniList's title map into episode records, dropping
+// anything numbered past what MAL says the series runs to.
+//
+// The bound matters because streamingEpisodes is the streaming site's flat
+// listing and keeps counting across seasons rather than restarting. The Tower of
+// God season 1 entry lists all 26 episodes of seasons 1 and 2, so without a
+// bound episodes 14-26 were created against season 1 carrying season 2's
+// titles, with no sources on any of them.
+//
+// A nil or zero max means MAL does not know the length either, which is normal
+// while a series is still airing; nothing is dropped in that case.
+func episodesFromAniList(titles map[int]string, max *int) (eps []jikan.EpisodeData, skipped int) {
+	for num, t := range titles {
+		if num <= 0 {
+			continue
+		}
+		if max != nil && *max > 0 && num > *max {
+			skipped++
+			continue
+		}
+		title := t
+		eps = append(eps, jikan.EpisodeData{Number: num, Title: &title})
+	}
+	sort.Slice(eps, func(i, j int) bool { return eps[i].Number < eps[j].Number })
+	return eps, skipped
+}
+
 func backfillEpisodeMeta(ctx context.Context, r *repo.Repo, jk *jikan.Client) error {
 	titles, err := r.AllAnimeWithMalID(ctx)
 	if err != nil {
@@ -353,10 +381,23 @@ func backfillEpisodeMeta(ctx context.Context, r *repo.Repo, jk *jikan.Client) er
 				failed++
 				continue
 			}
-			eps = eps[:0]
-			for num, t := range titles {
-				title := t
-				eps = append(eps, jikan.EpisodeData{Number: num, Title: &title})
+			// AniList's streamingEpisodes is the streaming site's flat listing,
+			// and for a multi-season series it keeps counting across seasons
+			// instead of restarting: the Tower of God season 1 entry lists all
+			// 26 episodes of seasons 1 and 2, so numbers 14-26 were created as
+			// season 1 episodes carrying season 2's titles. MAL's own count is
+			// the bound. Nil means MAL does not know either, usually because the
+			// series is still airing, and then nothing is capped.
+			var skipped int
+			eps, skipped = episodesFromAniList(titles, a.Episodes)
+			if skipped > 0 {
+				slog.Warn("anilist listed episodes past the series length, ignored",
+					"title", a.Title, "mal_episodes", *a.Episodes, "ignored", skipped)
+			}
+			if len(eps) == 0 {
+				slog.Warn("no usable episode source", "title", a.Title)
+				failed++
+				continue
 			}
 			fromAniList = true
 			slog.Info("using anilist titles", "title", a.Title, "episodes", len(eps))

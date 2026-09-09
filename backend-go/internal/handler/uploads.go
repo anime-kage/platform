@@ -78,7 +78,18 @@ func (h *Handler) presignVideoUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	ext := strings.ToLower(filepath.Ext(body.Filename))
 	if !videoExts[ext] {
-		httpx.Error(w, http.StatusBadRequest, "Video must be .mp4, .webm, .mkv or .m4v")
+		// Name the extension actually received. Without it, a file Windows
+		// displays as "episode" (extensions hidden) or a half-finished
+		// "episode.mp4.part" produces a message that reads like the platform
+		// is broken, when the fix is renaming the file.
+		got := ext
+		if got == "" {
+			got = "(no extension)"
+		}
+		httpx.Error(w, http.StatusBadRequest, fmt.Sprintf(
+			"Fișierul trebuie să fie .mp4, .webm, .mkv sau .m4v — acesta este %s. "+
+				"În Windows, extensiile sunt ascunse implicit: File Explorer → View → "+
+				"Show → File name extensions.", got))
 		return
 	}
 	if body.Size <= 0 || body.Size > maxVideoBytes {

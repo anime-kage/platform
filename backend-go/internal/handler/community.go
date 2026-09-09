@@ -18,6 +18,11 @@ import (
 
 const (
 	communityListLimit = 40
+	// The members tab is a directory, not a feed: it lists everyone and the page
+	// pages through them eight at a time. Sharing the feed limit of 40 meant it
+	// silently stopped at five pages no matter how many members existed, which
+	// with 169 accounts hid three quarters of them.
+	communityMembersLimit = 1000
 	forumListLimit     = 60
 )
 
@@ -33,7 +38,7 @@ func (h *Handler) communityMembers(w http.ResponseWriter, r *http.Request) {
 	if v := viewerID(r); v != nil {
 		viewer = *v
 	}
-	rows, err := h.repo.CommunityMembers(r.Context(), viewer, communityListLimit)
+	rows, err := h.repo.CommunityMembers(r.Context(), viewer, communityMembersLimit)
 	if err != nil {
 		httpx.Internal(w, "community members", err)
 		return

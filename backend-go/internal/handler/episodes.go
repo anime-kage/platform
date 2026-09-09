@@ -63,7 +63,12 @@ func validateHostingURL(raw string, allowed []string) error {
 // serves a single-page-app shell with 200 on *every* path of its other domains,
 // so "it returned 200" proves nothing there; and /e/{code}, which looks like
 // the obvious form, 302s to their homepage.
-var fileHostCode = regexp.MustCompile(`(?i)^(?:/[a-z]{2})?(?:/(?:e|d|f|v|file|embed|download))*/([a-z0-9]{8,24})(?:/[^/]*)*/?$`)
+// (?:embed-)? and (?:\.html)? were added for VTBE, whose watch page is
+// /{code}.html and whose player is /embed-{code}.html. Without them the path
+// never matched, fileHostEmbed returned the URL untouched, and framing a watch
+// page showed the host's entire site instead of just the player. Accepting the
+// embed- form too makes normalising an already-normalised URL a no-op.
+var fileHostCode = regexp.MustCompile(`(?i)^(?:/[a-z]{2})?(?:/(?:e|d|f|v|file|embed|download))*/(?:embed-)?([a-z0-9]{8,24})(?:\.html)?(?:/[^/]*)*/?$`)
 
 var fileHostLocale = regexp.MustCompile(`(?i)^/([a-z]{2})/`)
 
@@ -74,6 +79,7 @@ var embedHosts = map[string]string{
 	"filemoon":   "/{locale}/{code}/embed",
 	"moonplayer": "/{locale}/{code}/embed",
 	"playmogo":   "/e/{code}",
+	"vtbe":       "/embed-{code}.html",
 }
 
 func fileHostEmbed(raw string) string {

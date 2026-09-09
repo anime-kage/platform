@@ -4,6 +4,18 @@
   import { nameHue } from '$lib/avatar';
   import EmojiPicker from '$lib/components/EmojiPicker.svelte';
   import SpoilerButton from '$lib/components/SpoilerButton.svelte';
+  import { onMount } from 'svelte';
+  import { emotes as emoteStore, loadEmotes, emoteMap, appendPick } from '$lib/stores/emotes';
+
+  /* The picker listed only the stock emoji, so the uploaded set was reachable
+     in chat but not here. Only customEmotes is passed, deliberately: the stock
+     shortcode map that chat also passes maps codes to glyphs, and RichText —
+     which renders comments and reviews — does not expand those, so offering
+     them would insert codes that stay as literal text. */
+  onMount(() => {
+    loadEmotes();
+  });
+  const customEmotes = $derived(emoteMap($emoteStore));
 
   interface Props {
     user: { username: string; avatarUrl?: string | null };
@@ -68,7 +80,7 @@
     ></textarea>
     <div class="form-footer">
       <div class="foot-left">
-        <EmojiPicker onPick={(e) => (value += e)} />
+        <EmojiPicker {customEmotes} onPick={(e) => (value = appendPick(value, e, customEmotes))} />
         <SpoilerButton bind:value input={inputEl} />
         <GifPicker onPick={(url) => (value = value ? `${value} ${url}` : url)} />
         <span class="char-count">{value.length}/2000</span>

@@ -13,6 +13,10 @@ type AiringTitle struct {
 	MalID  *int   `db:"mal_id"`
 	Title  string `db:"title"`
 	Status string `db:"status"`
+	// Episodes is what MAL says the series runs to, and it bounds the AniList
+	// title fallback. Nil means unknown, which is normal for a series still
+	// airing, and then nothing is bounded.
+	Episodes *int `db:"episodes"`
 }
 
 // AiringAnime lists the anime worth polling Jikan for: currently airing plus
@@ -20,7 +24,7 @@ type AiringTitle struct {
 func (r *Repo) AiringAnime(ctx context.Context) ([]AiringTitle, error) {
 	var out []AiringTitle
 	err := pgxscan.Select(ctx, r.pool, &out,
-		`SELECT id, mal_id, title, status FROM anime
+		`SELECT id, mal_id, title, status, episodes FROM anime
 		 WHERE status IN ('airing', 'upcoming') ORDER BY id`)
 	return out, err
 }
@@ -32,7 +36,7 @@ func (r *Repo) AiringAnime(ctx context.Context) ([]AiringTitle, error) {
 func (r *Repo) AllAnimeWithMalID(ctx context.Context) ([]AiringTitle, error) {
 	var out []AiringTitle
 	err := pgxscan.Select(ctx, r.pool, &out,
-		`SELECT id, mal_id, title, status FROM anime
+		`SELECT id, mal_id, title, status, episodes FROM anime
 		 WHERE mal_id IS NOT NULL AND mal_id > 0 ORDER BY id`)
 	return out, err
 }

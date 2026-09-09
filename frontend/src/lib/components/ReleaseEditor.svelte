@@ -127,14 +127,58 @@
   let translated = $derived(events.filter((e) => e.roText.trim() !== '').length);
   let aiRows = $derived(events.filter((e) => e.roText !== '' && !e.edited).length);
 
-  // reading speed: subtitles over ~20 chars/second are hard to read in time
-  const CPS_LIMIT = 20;
+  // Reading speed, in characters per second (spaces counted, as the standard
+  // defines it).
+  //
+  // 20 is the professional figure — it is what Netflix specifies, Romanian
+  // included. It is too tight HERE for a reason that is not a mistake in the
+  // translation: Romanian runs about 10-20% longer than the same English line,
+  // so a subtitle timed comfortably at 18 in English lands at 21-22 in Romanian
+  // on identical timing. Studios fix that by condensing the text; fansubs
+  // generally do not, and 25 is the usual threshold there.
+  //
+  // Adjustable rather than fixed, because the right number depends on the
+  // series and the translator, and nobody should need a deploy to change it.
+  const CPS_DEFAULT = 25;
+  let cpsLimit = $state(CPS_DEFAULT);
+
+  // Append a line at the end — a credit, a note. The default timing sits just
+  // after the last existing line rather than at the very end of the runtime:
+  // the same episode comes from several hosts and their copies are not all the
+  // same length, so a credit parked at 23:59 can fall outside a shorter copy
+  // and silently never show.
+  let newLineText = $state('');
+  let addingLine = $state(false);
+  const CREDIT_GAP_MS = 500;
+  const CREDIT_LEN_MS = 5000;
+
+  async function appendLine() {
+    const text = newLineText.trim();
+    if (!text || addingLine) return;
+    addingLine = true;
+    try {
+      const lastEnd = events.length ? Math.max(...events.map((e) => e.endMs)) : 0;
+      const start = lastEnd + CREDIT_GAP_MS;
+      const created = await api.appendReleaseEvent(releaseId, start, start + CREDIT_LEN_MS, text);
+      events = [...events, created.data];
+      newLineText = '';
+      // The preview track is fetched from the server, not built locally, so a
+      // new line is invisible until it is re-fetched. Without this the line was
+      // saved correctly and simply never appeared on the video.
+      scheduleTrackRefresh();
+      toast.success('Replica a fost adaugata la final.');
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? 'Nu am putut adauga replica.');
+    } finally {
+      addingLine = false;
+    }
+  }
   function cps(ev: SubtitleEvent): number {
     const secs = (ev.endMs - ev.startMs) / 1000;
     if (secs <= 0 || ev.roText.trim() === '') return 0;
     return ev.roText.length / secs;
   }
-  let warnRows = $derived(events.filter((e) => cps(e) > CPS_LIMIT));
+  let warnRows = $derived(events.filter((e) => cps(e) > cpsLimit));
 
   let filtered = $derived(
     filter === 'netraduse'
@@ -576,8 +620,32 @@
             </p>
             {#if warnRows.length > 0}
               <p class="p-warn">
-                ⚠ {warnRows.length === 1 ? 'o replică e' : `${warnRows.length} replici sunt`} peste {CPS_LIMIT} car/s — vezi filtrul Atenție
+                ⚠ {warnRows.length === 1 ? 'o replică e' : `${warnRows.length} replici sunt`} peste {cpsLimit} car/s — vezi filtrul Atenție
               </p>
+            {/if}
+            <!-- The threshold is a judgement call, not a fact: Romanian runs longer
+                 than English at the same timing, so the professional 20 flags lines
+                 that read perfectly well. Editable here so it never needs a deploy. -->
+            <label class="cps-set">
+              Prag viteza
+              <input type="number" min="10" max="40" step="1" bind:value={cpsLimit} />
+              car/s
+            </label>
+            <!-- Append a line at the end: credits, a note. Only shown while the
+                 release is still editable. -->
+            {#if editable}
+              <div class="add-line">
+                <input
+                  type="text"
+                  placeholder="Adauga o replica la final (ex: Tradus de ...)"
+                  bind:value={newLineText}
+                  onkeydown={(e) => e.key === 'Enter' && appendLine()}
+                  disabled={addingLine}
+                />
+                <button class="btn ghost" onclick={appendLine} disabled={addingLine || !newLineText.trim()}>
+                  {addingLine ? 'Se adauga...' : '+ Adauga'}
+                </button>
+              </div>
             {/if}
             {#if editable && translated < events.length}
               <button class="btn ghost wide" onclick={autoTranslate} disabled={translating}>
@@ -780,7 +848,7 @@
                     onkeydown={(e) => onKeydown(e, ev)}
                     onblur={(e) => saveRow(ev, (e.currentTarget as HTMLTextAreaElement).value)}
                   ></textarea>
-                  {#if cps(ev) > CPS_LIMIT}
+                  {#if cps(ev) > cpsLimit}
                     <span class="cps">⚠ {Math.round(cps(ev))} car/s — prea rapid de citit, scurtează</span>
                   {/if}
                   {#if mode === 'verify' && touched.has(ev.idx)}
@@ -889,6 +957,13 @@
     display: flex; flex-direction: column; gap: var(--space-3);
     max-height: calc(100vh - var(--header-h) - 4.5rem);
     overflow-y: auto; scrollbar-width: thin;
+    /* Reserve the scrollbar's width whether or not it is showing.
+       Without this the rail flickers: when its content sits right at the
+       max-height, hovering reveals an overlay scrollbar, that steals width,
+       the video (width:100%) narrows, the content grows slightly taller,
+       crosses the boundary again, and the scrollbar toggles back — the box
+       and the preview visibly oscillate under the cursor. */
+    scrollbar-gutter: stable;
   }
   @media (max-width: 1000px) {
     .workspace { grid-template-columns: minmax(0, 1fr); }
@@ -924,11 +999,34 @@
   .preview::cue {
     background: rgba(0, 0, 0, 0);
     color: #fff;
-    font-family: var(--font-body);
+    /* Noto Sans at regular weight, because that is what actually gets burned
+       into the video (assFontName / Bold=0 in subs/ass.go). This used to be the
+       site's UI face at semibold, which made the preview both heavier and a
+       different typeface than the file members end up watching, so it was
+       checking the wrong thing. The burn is deliberately not bold: the weight
+       comes from the outline, and a bold face at that size reads chunky. */
+    font-family: 'Noto Sans', var(--font-body);
+    font-weight: 400;
+    /* A real outline, not a glow. The burned-in version draws a 3px solid
+       border around every glyph (subs/ass.go), which is what makes it read
+       crisp; a blurred text-shadow spreads the same darkness over several
+       pixels and the letters come out looking thinner and washed out.
+       Eight 0-blur offsets reproduce the border, and one soft shadow under
+       it keeps some depth against a bright frame.
+       Layered shadows rather than -webkit-text-stroke on purpose: the TVs
+       this has to run on are Chromium 53-79, where paint-order for HTML text
+       is unsupported and a stroke eats into the glyph instead of sitting
+       behind it. */
     text-shadow:
-      0 0 3px rgba(0, 0, 0, 0.9),
-      0 2px 4px rgba(0, 0, 0, 0.8),
-      0 0 8px rgba(0, 0, 0, 0.6);
+      -2px -2px 0 rgba(0, 0, 0, 0.95),
+       2px -2px 0 rgba(0, 0, 0, 0.95),
+      -2px  2px 0 rgba(0, 0, 0, 0.95),
+       2px  2px 0 rgba(0, 0, 0, 0.95),
+      -2px  0   0 rgba(0, 0, 0, 0.95),
+       2px  0   0 rgba(0, 0, 0, 0.95),
+       0   -2px 0 rgba(0, 0, 0, 0.95),
+       0    2px 0 rgba(0, 0, 0, 0.95),
+       0    2px 6px rgba(0, 0, 0, 0.65);
   }
 
   .card {
@@ -969,6 +1067,26 @@
   .p-warn {
     font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--warning);
     line-height: 1.5; border-top: 1px solid var(--border-subtle); padding-top: 10px;
+  }
+
+  .cps-set {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: var(--fs-micro);
+    color: var(--text-muted); margin-top: 8px;
+  }
+  .cps-set input {
+    width: 54px; padding: 2px 6px; font: inherit;
+    background: var(--surface-inset); color: var(--text-primary);
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  }
+  .add-line {
+    display: flex; gap: 6px; margin-top: 10px;
+  }
+  .add-line input {
+    flex: 1; min-width: 0; padding: 5px 8px; font: inherit;
+    font-size: var(--fs-caption);
+    background: var(--surface-inset); color: var(--text-primary);
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
   }
 
   .verdict { border-color: var(--border-default); }
@@ -1075,6 +1193,9 @@
     max-height: calc(100vh - var(--header-h) - 12rem);
     min-height: 380px;
     overflow-y: auto; overscroll-behavior: contain;
+    /* Same reason as .rail: a list that just fits would flicker as the
+       scrollbar appears and disappears under the cursor. */
+    scrollbar-gutter: stable;
   }
   .row {
     display: grid; grid-template-columns: 3rem 4.2rem 1fr 1fr 1.6rem;

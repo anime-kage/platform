@@ -247,7 +247,7 @@
   // and therefore the only one that can carry our RO subtitle and skip marks.
   // An embed is a fallback for hosts that can't be extracted.
   let linkKind = $state<'embed' | 'extract'>('extract');
-  let linkProvider = $state('doodstream');
+  let linkProvider = $state('vtbe');
   let linkRef = $state('');
   let linkLang = $state('ro');
   let linkPriority = $state(0);
@@ -313,25 +313,40 @@
     }
   }
 
-  // per media: which extract providers make sense. `doodstream` first — it is
-  // the one verified to send CORS, which is what our own player needs; a host
-  // without it can only ever be an `embed` (no RO subtitle, no skip intro).
-  const providers = media === 'anime' ? ['doodstream', 'direct', 'filemoon'] : ['mangadex'];
+  // per media: which extract providers make sense. `vtbe` first, because it is
+  // the only one the catalog actually runs on: all 19,349 extract links in the
+  // database are vtbe, and doodstream/filemoon/direct have none between them.
+  //
+  // vtbe was missing from this list entirely, which meant the one provider in
+  // real use was the one nobody could pick. Every vtbe link got there through
+  // the import scripts, so the gap stayed invisible until someone tried to add
+  // a source by hand and found their own player refusing a host page.
+  //
+  // The list must stay in step with resolver.Default() in the backend
+  // (Direct, Filemoon, DoodStream, VTBE, Luluvdo); a name that is not
+  // registered there is rejected on save.
+  const providers =
+    media === 'anime' ? ['vtbe', 'doodstream', 'filemoon', 'luluvdo', 'direct'] : ['mangadex'];
 
   // For every provider except MangaDex the reference *is* a URL, so asking for
   // both a "source URL" and a "provider reference" was two fields for one
   // value. One field, reused as both.
   const refIsUrl = $derived(linkKind === 'extract' && linkProvider !== 'mangadex');
+  // A flat lookup rather than a ternary chain: the chain was already five deep
+  // and every new provider pushed the indentation further out than the value it
+  // was describing.
+  const providerHints: Record<string, string> = {
+    vtbe: 'https://vtbe.to/cod-fișier.html (pagina de player)',
+    doodstream: 'https://playmogo.com/e/cod-fișier',
+    filemoon: 'https://filemoon.org/en/cod-fișier/embed',
+    luluvdo: 'https://luluvdo.com/e/cod-fișier',
+    direct: 'https://cdn.exemplu.ro/video.mp4 (fișierul în sine)',
+    mangadex: 'https://mangadex.org/chapter/… (pagina capitolului)'
+  };
   const urlHint = $derived(
     linkKind === 'embed'
       ? 'https://host.exemplu/e/cod-fișier (pagina de player)'
-      : linkProvider === 'doodstream'
-        ? 'https://playmogo.com/e/cod-fișier'
-        : linkProvider === 'filemoon'
-          ? 'https://filemoon.org/en/cod-fișier/embed'
-          : linkProvider === 'direct'
-            ? 'https://cdn.exemplu.ro/video.mp4 (fișierul în sine)'
-            : 'https://mangadex.org/chapter/… (pagina capitolului)'
+      : (providerHints[linkProvider] ?? 'https://host.exemplu/e/cod-fișier')
   );
 
   async function openSources(id: number) {

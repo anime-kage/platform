@@ -94,6 +94,41 @@ services:
   # One-shot migrations:
   #   docker compose -f docker-compose.staging.yml --env-file .env.staging \
   #     --profile setup run --rm db-migrate
+  # The test bot. Its own Discord application and its own guild, so restarting
+  # it cannot interrupt the live one -- the isolation comes from the token and
+  # the guild, not from the machine.
+  #
+  # The anti-spam honeypot is deliberately left unset: a blank channel id turns
+  # the feature off entirely, and a bot that mutes people and purges messages is
+  # not something to point at a server you are experimenting in.
+  discordbot-staging:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    container_name: anime-kage-discordbot-staging
+    entrypoint: ["/app/discordbot"]
+    networks: [internal]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-staging_user}:${DB_PASSWORD}@postgres-staging:5432/${DB_NAME:-anime_kage_staging}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - DISCORD_INVITE_CHANNEL_ID=${DISCORD_INVITE_CHANNEL_ID}
+      # testing only: these ids skip the game cooldowns
+      - DISCORD_UNLIMITED_IDS=${DISCORD_UNLIMITED_IDS}
+      - DISCORD_GACHA_CHANNEL_ID=${DISCORD_GACHA_CHANNEL_ID}
+      - DISCORD_HUNT_CHANNEL_ID=${DISCORD_HUNT_CHANNEL_ID}
+      - PUBLIC_URL=${PUBLIC_URL:-https://staging.anime-kage.ro}
+      - INVITE_TTL=${INVITE_TTL:-7d}
+      - INVITE_QUOTA_WINDOW=${INVITE_QUOTA_WINDOW:-24h}
+      # honeypot off on staging -- see above
+      - DISCORD_PROTECTION_CHANNEL_ID=
+      - DISCORD_MUTED_ROLE_ID=
+      - DISCORD_MOD_LOG_CHANNEL_ID=
+    depends_on:
+      postgres-staging:
+        condition: service_healthy
+    restart: unless-stopped
+
   db-migrate:
     networks: [internal]
     build:

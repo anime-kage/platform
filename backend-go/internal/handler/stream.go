@@ -13,7 +13,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"animekage/backend/internal/httpx"
-	"animekage/backend/internal/resolver"
 )
 
 // GET /api/episodes/{id}/stream
@@ -46,7 +45,14 @@ func (h *Handler) episodeStream(w http.ResponseWriter, r *http.Request) {
 				"episodeId", id, "sourceId", src.ID, "provider", *src.Provider, "err", err)
 			continue
 		}
-		h.mergeOwnSubtitles(r, id, res)
+		// Our own .vtt tracks are deliberately NOT attached. Every source we
+		// publish is a burned copy -- the hardsub pipeline exists precisely
+		// because the hosts cannot carry soft subs -- so adding them here drew
+		// a second set of subtitles over the ones already in the picture.
+		// Only extract sources reach this endpoint (embeds play in the host's
+		// own iframe and never render our <track>s), so this is the one place
+		// it could happen. The rows stay published: they are the translation
+		// record, and health monitoring counts them.
 		httpx.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 			"stream": res,
 			"source": map[string]any{
@@ -61,33 +67,3 @@ func (h *Handler) episodeStream(w http.ResponseWriter, r *http.Request) {
 	httpx.Error(w, http.StatusNotFound, "No stream source for this episode")
 }
 
-// mergeOwnSubtitles prepends our published .vtt tracks to whatever the
-// provider supplied — ours are the product, so they come first
-// and duplicate provider tracks for the same language are dropped. Subtitle
-// lookup failures are logged, not fatal: the stream still plays.
-func (h *Handler) mergeOwnSubtitles(r *http.Request, episodeID int, res *resolver.Result) {
-	subs, err := h.repo.PublishedSubtitles(r.Context(), episodeID)
-	if err != nil {
-		slog.Warn("fetch subtitles for stream", "episodeId", episodeID, "err", err)
-		return
-	}
-	own := make([]resolver.Subtitle, 0, len(subs))
-	seen := map[string]bool{}
-	for _, s := range subs {
-		if s.Format != "vtt" { // <track> only renders WebVTT
-			continue
-		}
-		label := s.Language
-		if s.Label != nil && *s.Label != "" {
-			label = *s.Label
-		}
-		own = append(own, resolver.Subtitle{URL: s.URL, Language: s.Language, Label: label})
-		seen[s.Language] = true
-	}
-	for _, t := range res.Subtitles {
-		if !seen[t.Language] {
-			own = append(own, t)
-		}
-	}
-	res.Subtitles = own
-}
