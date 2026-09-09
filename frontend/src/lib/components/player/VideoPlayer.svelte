@@ -862,14 +862,34 @@
     max-width: 100%;
     color: #fff;
     font-family: var(--font-body);
-    font-size: clamp(14px, 3cqw, 34px);
-    font-weight: var(--fw-medium, 500);
+    /* 3.75cqw matches the burn: ASS uses 72 at PlayResX 1920, which is 3.75%
+       of frame WIDTH, and cqw is a percentage of the player's width. Keeping
+       the two in step is the point — the preview has to show what a viewer
+       gets, and this player draws the same lines the burn would. */
+    font-size: clamp(16px, 3.75cqw, 44px);
+    font-weight: var(--fw-semibold, 600);
     line-height: 1.35;
     text-wrap: balance;
-    text-shadow:
-      0 0 3px rgba(0, 0, 0, 0.95),
-      0 2px 5px rgba(0, 0, 0, 0.85),
-      0 0 10px rgba(0, 0, 0, 0.6);
+      /* A real outline, not a glow. The burned-in version draws a 2.6px solid
+         border around every glyph (subs/ass.go), which is what makes it read
+         crisp; a blurred text-shadow spreads the same darkness over several
+         pixels and the letters come out looking thinner and washed out.
+         Eight 0-blur offsets reproduce the border, and one soft shadow under
+         it keeps some depth against a bright frame.
+         Layered shadows rather than -webkit-text-stroke on purpose: the TVs
+         this has to run on are Chromium 53-79, where paint-order for HTML text
+         is unsupported and a stroke eats into the glyph instead of sitting
+         behind it. */
+      text-shadow:
+        -2px -2px 0 rgba(0, 0, 0, 0.95),
+         2px -2px 0 rgba(0, 0, 0, 0.95),
+        -2px  2px 0 rgba(0, 0, 0, 0.95),
+         2px  2px 0 rgba(0, 0, 0, 0.95),
+        -2px  0   0 rgba(0, 0, 0, 0.95),
+         2px  0   0 rgba(0, 0, 0, 0.95),
+         0   -2px 0 rgba(0, 0, 0, 0.95),
+         0    2px 0 rgba(0, 0, 0, 0.95),
+         0    2px 6px rgba(0, 0, 0, 0.65);
   }
   .cues :global(i) {
     font-style: italic;

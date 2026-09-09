@@ -28,6 +28,10 @@ import type {
   ReadlistUpdateForm,
   ProfileUpdateForm,
   Comment as CommentType,
+  GameBoard,
+  GameLeaderRow,
+  GameCharHit,
+  GamePuzzle,
   Review,
   HistoryDay,
   FollowNetwork,
@@ -167,6 +171,14 @@ class ApiClient {
       throw error;
     }
 
+    // 204 has no body, and response.json() throws on an empty one. Because
+    // response.ok is true for 204 the error branch above never runs, so the
+    // throw reached callers as a failure on a request that had succeeded:
+    // the delete worked, the UI showed an error and rolled back, and the row
+    // was gone anyway after a reload.
+    if (response.status === 204) {
+      return undefined as T;
+    }
     return response.json();
   }
 
@@ -582,6 +594,17 @@ class ApiClient {
    */
   async getContinueWatching(limit?: number): Promise<{ data: ContinueEntry[] }> {
     return this.request(`/api/users/me/continue${limit ? `?limit=${limit}` : ''}`);
+  }
+
+  /**
+   * Dismiss a series from the "Continuă vizionarea" shelf.
+   *
+   * Does not touch the watchlist. Hiding a card and marking a series dropped
+   * are separate statements, and the shelf brings it back on its own once
+   * there is newer activity on the series.
+   */
+  async hideFromContinue(animeId: number): Promise<void> {
+    await this.request(`/api/users/me/continue/${animeId}`, { method: 'DELETE' });
   }
 
   async getWatchlist(status?: string): Promise<{ data: WatchlistEntry[] }> {
@@ -1078,7 +1101,9 @@ class ApiClient {
   // ── Live chat ──────────────────────────────────────────────────
 
   /** The backlog a freshly-opened panel shows, oldest-first. */
-  async getChatMessages(limit?: number): Promise<{ data: ChatMessage[]; viewers: number }> {
+  async getChatMessages(
+    limit?: number
+  ): Promise<{ data: ChatMessage[]; pinned: ChatMessage | null; viewers: number }> {
     return this.request(`/api/chat/messages${limit ? `?limit=${limit}` : ''}`);
   }
 
@@ -1094,6 +1119,16 @@ class ApiClient {
   /** Own message, or any message for moderators/admins. */
   async deleteChatMessage(id: number): Promise<{ message: string }> {
     return this.request(`/api/chat/messages/${id}`, { method: 'DELETE' });
+  }
+
+  /** Hold one message at the top of the room. Staff only. */
+  async pinChatMessage(id: number): Promise<{ data: ChatMessage }> {
+    return this.request(`/api/chat/messages/${id}/pin`, { method: 'POST' });
+  }
+
+  /** Clear the pin. No id: the room has at most one. */
+  async unpinChatMessage(): Promise<void> {
+    return this.request('/api/chat/pin', { method: 'DELETE' });
   }
 
   /**
@@ -1488,6 +1523,23 @@ class ApiClient {
     id: number
   ): Promise<{ running: boolean; total: number; filled: number; done: boolean; error?: string }> {
     return this.request(`/api/releases/${id}/translate/status`);
+  }
+
+  /**
+   * Append one subtitle line to the end of a release - a credit line, a
+   * translator's note. Appends only: idx is unique per release and the file
+   * is ordered by it, so inserting mid-file would renumber every later row.
+   */
+  async appendReleaseEvent(
+    id: number,
+    startMs: number,
+    endMs: number,
+    roText: string
+  ): Promise<{ data: SubtitleEvent }> {
+    return this.request(`/api/releases/${id}/events`, {
+      method: 'POST',
+      body: JSON.stringify({ startMs, endMs, roText }),
+    });
   }
 
   /** Per-row autosave from the /translate editor; marks the row human-edited. */
@@ -1900,6 +1952,93 @@ class ApiClient {
       }
     });
     return params.toString();
+  }
+
+  // ── Arcade ────────────────────────────────────────────────────────────────
+
+  /** Profile, every puzzle in the playable window, and the faction list. */
+  async getGameBoard(): Promise<{ data: GameBoard }> {
+    return this.request('/api/games/board');
+  }
+
+  /** One guess, or a surrender. Returns the puzzle's new state. */
+  async guessPuzzle(
+    puzzleId: number,
+    guess: string,
+    giveUp = false
+  ): Promise<{ data: GamePuzzle; award?: { xp: number; gold: number } }> {
+    return this.request(`/api/games/puzzles/${puzzleId}/guess`, {
+      method: 'POST',
+      body: JSON.stringify({ guess, giveUp })
+    });
+  }
+
+  /** Buy the synopsis clue. Only offered late, and it costs 25% of the award. */
+  async hintPuzzle(puzzleId: number): Promise<{ data: GamePuzzle }> {
+    return this.request(`/api/games/puzzles/${puzzleId}/hint`, { method: 'POST' });
+  }
+
+  /** Character-name autocomplete for the character round. */
+  async searchGameCharacters(q: string): Promise<{ data: GameCharHit[] }> {
+    return this.request(`/api/games/characters?q=${encodeURIComponent(q)}`);
+  }
+
+  /** Submit a whole character round. One submission, no retries. */
+  async submitCharRound(
+    puzzleId: number,
+    answers: { charId: number; animeId: number }[]
+  ): Promise<{ data: GamePuzzle; score: { names: number; series: number; xp: number; gold: number } }> {
+    return this.request(`/api/games/puzzles/${puzzleId}/characters`, {
+      method: 'POST',
+      body: JSON.stringify({ answers })
+    });
+  }
+
+  /** Send one set of four titles from a Grupe board. The round is scored only
+   *  when it ends, so this returns progress rather than an award each time. */
+  async submitGroup(
+    puzzleId: number,
+    animeIds: number[]
+  ): Promise<{
+    data: {
+      found: {
+        label: string;
+        animeIds: number[];
+        kind: 'studio' | 'year' | 'genre' | '';
+        value: string;
+        solved: boolean;
+      }[];
+      mistakes: number;
+      maxMistakes: number;
+      finished: boolean;
+      solved: boolean;
+      closest: number;
+      award: { xp: number; gold: number };
+    };
+  }> {
+    return this.request(`/api/games/puzzles/${puzzleId}/groups`, {
+      method: 'POST',
+      body: JSON.stringify({ animeIds })
+    });
+  }
+
+  /** Open today's chest. 409 when it has already been opened today. */
+  async claimChest(): Promise<{ data: { gold: number; streak: number } }> {
+    return this.request('/api/games/chest', { method: 'POST' });
+  }
+
+  /** The arcade ranking, read only when that tab is opened. */
+  async getGameLeaderboard(): Promise<{ data: GameLeaderRow[] }> {
+    return this.request('/api/games/leaderboard');
+  }
+
+  /** Switch faction. Free — each faction keeps its own progress. Returns how
+   *  much XP the move claimed out of the pre-faction bank. */
+  async setFaction(faction: string): Promise<{ message: string; claimedXp: number }> {
+    return this.request('/api/games/faction', {
+      method: 'POST',
+      body: JSON.stringify({ faction })
+    });
   }
 }
 

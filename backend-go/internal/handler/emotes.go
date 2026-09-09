@@ -52,7 +52,13 @@ const (
 
 // emoteCodeRe: what people type in chat. Letters and digits only — the
 // tokenizer splits on whitespace, so a code with punctuation could never match.
-var emoteCodeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{1,23}$`)
+//
+// A code MAY start with a digit and MAY be a single character, so "67" works.
+// Be aware of what that means: the tokenizer matches bare words, so an emote
+// named 67 turns every standalone "67" in chat into that image — including in
+// "episodul 67". That is the intended behaviour for meme emotes; it is only a
+// surprise if nobody said so.
+var emoteCodeRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9]{0,23}$`)
 
 // GET /api/emotes — every member (the chat and the picker need it).
 func (h *Handler) listEmotes(w http.ResponseWriter, r *http.Request) {

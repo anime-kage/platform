@@ -24,9 +24,78 @@
     { left: '40%', top: '18%', width: '210px', rot: '3deg', z: 3 },
     { left: '18%', top: '46%', width: '190px', rot: '-2deg', z: 1 }
   ];
+
+  // Names Anime-Kage as an entity, with the spellings people actually type.
+  // alternateName matters here: the brand is written three ways in the wild
+  // (hyphen, space, joined) and only the hyphenated one is in our title.
+  const SITE = 'https://anime-kage.ro/';
+  const siteSchema = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Organization',
+        '@id': SITE + '#organizatie',
+        name: 'Anime-Kage',
+        alternateName: ['Anime Kage', 'AnimeKage', 'Anime·Kage'],
+        url: SITE,
+        logo: SITE + 'logo.png',
+        description:
+          'Comunitate românească pe bază de invitație pentru anime și manga traduse în română.'
+      },
+      {
+        '@type': 'WebSite',
+        '@id': SITE + '#site',
+        name: 'Anime-Kage',
+        alternateName: ['Anime Kage', 'AnimeKage'],
+        url: SITE,
+        inLanguage: 'ro-RO',
+        publisher: { '@id': SITE + '#organizatie' }
+      }
+    ]
+  };
 </script>
 
-<svelte:head><title>Anime-Kage</title></svelte:head>
+<!--
+  Landing-page metadata. This is the ONLY page Google can crawl, since every
+  other route redirects a logged-out visitor to the login gate, so it carries
+  the whole burden of telling search engines what Anime-Kage is.
+
+  Before this the head held a <title> and nothing else: no description, no
+  canonical, no structured data. Searching the bare brand name returns other
+  sites that use it (anime-kage.net, animekage.com, several AnimeKage social
+  accounts) plus "Kage" as an anime title, and Google had nothing from us
+  saying this brand is this site. The JSON-LD below is that statement.
+-->
+<svelte:head>
+  <!-- Brand first, then what the site is. A bare "Anime-Kage" told Google the
+       name but nothing about the subject, so the page had no claim on any
+       Romanian anime query. There is no meta tag that buys topical relevance:
+       the title, the description and the visible copy are the only places the
+       words count. -->
+  <title>Anime-Kage | Anime și manga traduse în română</title>
+  <meta
+    name="description"
+    content="Anime-Kage: comunitate românească pe bază de invitație pentru anime și manga traduse în română. Urmărește, notează, construiește liste și discută cu alți fani."
+  />
+  <link rel="canonical" href="https://anime-kage.ro/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Anime-Kage" />
+  <meta property="og:locale" content="ro_RO" />
+  <meta property="og:title" content="Anime-Kage | Anime și manga traduse în română" />
+  <meta
+    property="og:description"
+    content="Comunitate românească pe bază de invitație pentru anime și manga traduse în română."
+  />
+  <meta property="og:url" content="https://anime-kage.ro/" />
+  <meta property="og:image" content="https://anime-kage.ro/banner.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Anime-Kage" />
+  <meta name="twitter:image" content="https://anime-kage.ro/banner.png" />
+  <!-- Built as a string and injected: a raw <script> block inside svelte:head
+       would have its braces read as Svelte expressions, and the closing tag has
+       to be split or it terminates this block early. -->
+  {@html `<script type="application/ld+json">${JSON.stringify(siteSchema)}<\/script>`}
+</svelte:head>
 
 <!-- The same popup the home page shows, on its own "seen" flag. The permanent
      notice in the hero stays: the popup catches people who skim past copy, the

@@ -3,6 +3,7 @@
   import PosterCard from '$lib/components/PosterCard.svelte';
   // import TestNotice from '$lib/components/TestNotice.svelte';
   import api from '$lib/api';
+  import { toast } from '$lib/stores/toast';
   import { authStore } from '$lib/stores/auth';
   import { displayName, studioOf, displaySynopsis} from '$lib/types';
   import { reltime } from '$lib/reltime';
@@ -53,6 +54,24 @@
   // it reads playback, which the watchlist alone can't tell us. Series with
   // nothing left to play are already filtered out server-side.
   let continueWatching = $state<ContinueEntry[]>([]);
+
+  /**
+   * Remove a series from the shelf.
+   *
+   * Optimistic: the card goes immediately, because waiting on a round trip to
+   * dismiss something makes the button feel broken. If the request fails the
+   * row is put back where it was rather than silently vanishing until reload.
+   */
+  async function dismissContinue(animeId: number) {
+    const before = continueWatching;
+    continueWatching = continueWatching.filter((c) => c.anime.id !== animeId);
+    try {
+      await api.hideFromContinue(animeId);
+    } catch {
+      continueWatching = before;
+      toast.error('Nu am putut scoate titlul. Încearcă din nou.');
+    }
+  }
 
   $effect(() => {
     if (auth.isLoading || !auth.isAuthenticated) return;
@@ -177,6 +196,17 @@
         {@const a = e.anime}
         {@const pct = episodePct(e)}
         {@const left = remaining(e)}
+        <!-- The button is a sibling of the link, not a child: an anchor may
+             not contain another interactive element, and nesting one makes
+             the whole card unreachable by keyboard in some browsers. -->
+        <div class="cw-wrap">
+          <button
+            class="cw-x"
+            type="button"
+            title="Scoate din Continuă vizionarea"
+            aria-label={`Scoate ${displayName(a)} din Continuă vizionarea`}
+            onclick={() => dismissContinue(a.id)}
+          >×</button>
         <a class="cw" href={`/anime/${a.id}/episode/${e.episodeNumber}`}>
           <span class="cw-media">
             {#if a.imageUrl}
@@ -203,6 +233,7 @@
             </span>
           </span>
         </a>
+        </div>
       {/each}
     </div>
   </section>
@@ -503,8 +534,28 @@
   .cell { flex: 0 0 160px; scroll-snap-align: start; }
 
   /* ---- continue watching ---- */
+  /* The wrapper exists only to position the dismiss button over the card.
+     .cw itself is the anchor and must stay a plain block, so the positioning
+     context goes here instead. */
+  .cw-wrap { position: relative; flex: 0 0 252px; scroll-snap-align: start; }
+  .cw-x {
+    position: absolute; top: 6px; right: 6px; z-index: 2;
+    width: 26px; height: 26px; padding: 0; line-height: 1;
+    display: grid; place-items: center;
+    font-size: 17px; cursor: pointer;
+    color: #fff; background: rgba(0, 0, 0, 0.62);
+    border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 999px;
+    /* Hidden until the card is hovered, but never hidden from the keyboard:
+       display:none would drop it out of the tab order entirely. */
+    opacity: 0; transition: opacity var(--motion-base) var(--ease);
+  }
+  .cw-wrap:hover .cw-x,
+  .cw-x:focus-visible { opacity: 1; }
+  .cw-x:hover { background: rgba(0, 0, 0, 0.82); }
+  /* Touch has no hover, so on a phone the button is simply always visible. */
+  @media (hover: none) { .cw-x { opacity: 1; } }
   .cw {
-    flex: 0 0 252px; scroll-snap-align: start; display: block;
+    display: block;
     border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden;
     background: var(--surface-raised);
     transition: border-color var(--motion-base) var(--ease);

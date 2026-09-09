@@ -609,7 +609,7 @@
 </div>
 
 <style>
-  .comm { padding-block: var(--space-6) var(--space-8); max-width: 1180px; }
+  .comm { padding-block: var(--space-6) var(--space-8); max-width: var(--container); }
 
   .plink { color: inherit; }
   .plink:hover { color: var(--accent); }

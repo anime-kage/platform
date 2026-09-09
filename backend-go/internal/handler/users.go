@@ -268,7 +268,7 @@ func (h *Handler) follow(w http.ResponseWriter, r *http.Request) {
 	actor := middleware.UserFrom(r)
 	link := "/user/" + actor.Username
 	h.notify(r.Context(), target.ID, "follow",
-		actor.Username+" a început să te urmărească.", &userID, &link)
+		FollowBody(actor.Username), &userID, &link)
 	h.respondNetwork(w, r, target.ID, true)
 }
 
@@ -381,6 +381,24 @@ func (h *Handler) myContinueWatching(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"data": rows})
+}
+
+// DELETE /api/users/me/continue/{animeId} — remove a series from the shelf.
+//
+// Returns 204 whether or not a row existed: dismissing something already
+// dismissed is not an error, and the client has nothing useful to do with the
+// difference.
+func (h *Handler) hideFromContinue(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.IntParam(chi.URLParam(r, "animeId"))
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "Invalid anime ID")
+		return
+	}
+	if err := h.repo.HideFromContinue(r.Context(), middleware.UserFrom(r).UserID, id); err != nil {
+		httpx.Internal(w, "hide from continue watching", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/users/{username}/watchlist — public

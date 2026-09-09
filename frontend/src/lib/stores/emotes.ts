@@ -37,3 +37,16 @@ export function emoteMap(list?: Emote[]): Record<string, string> {
   for (const e of list ?? get(emotes)) out[e.code] = e.imageUrl;
   return out;
 }
+
+/**
+ * Append a picker choice to a draft.
+ *
+ * Emote codes are matched by the renderer as whole whitespace-delimited
+ * tokens, so a code glued to the preceding word never resolves and the reader
+ * just sees `:code:`. Plain emoji are real characters and need no such care.
+ */
+export function appendPick(draft: string, pick: string, codes: Record<string, string>): string {
+  if (!codes[pick]) return draft + pick;
+  const sep = draft && !draft.endsWith(' ') ? ' ' : '';
+  return `${draft}${sep}${pick} `;
+}

@@ -45,6 +45,8 @@ func main() {
 	}
 }
 
+var adminOnly int64 = discordgo.PermissionAdministrator
+
 func run() error {
 	_ = godotenv.Load() // optional .env, like every other binary here
 
@@ -79,9 +81,20 @@ func run() error {
 		return fmt.Errorf("open gateway: %w", err)
 	}
 	defer session.Close()
+	// Open() can return without error and still leave State.User unset -- seen
+	// when Discord throttles a bot that restart:unless-stopped is reconnecting
+	// in a tight loop. Dereferencing it then panics, which turned one bad
+	// config value into a crash loop hammering the API. Fail with a sentence
+	// instead; the supervisor's backoff can do its job.
+	if session.State == nil || session.State.User == nil {
+		return fmt.Errorf("gateway opened but the session carries no user — " +
+			"usually Discord throttling a reconnect loop; retrying shortly")
+	}
 	slog.Info("connected", "user", session.State.User.Username)
 
 	go b.runSticky(session)
+	go b.runDrops(session)
+	go b.runMonsterExpiry(session)
 
 	registered, err := session.ApplicationCommandCreate(session.State.User.ID, cfg.GuildID, &discordgo.ApplicationCommand{
 		Name:        cfg.CommandName,
@@ -96,6 +109,57 @@ func run() error {
 	}
 	slog.Info("command registered", "name", "/"+registered.Name, "scope", scope)
 
+	// The games. Not fatal if one fails to register: the invite command is the
+	// front door to the site and must keep working regardless.
+	games := []*discordgo.ApplicationCommand{
+		{Name: dailyCommand, Description: dailyDesc},
+		{Name: collectionCommand, Description: collectionDesc,
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionUser,
+				Name:        collectionOptUser,
+				Description: "Al cui colecție (implicit: a ta)",
+			}}},
+		{Name: huntCommand, Description: huntDesc},
+		{Name: profileCommand, Description: profileDesc},
+		{Name: attackCommand, Description: attackDesc},
+		{Name: tradeCommand, Description: tradeDesc,
+			Options: []*discordgo.ApplicationCommandOption{
+				{Type: discordgo.ApplicationCommandOptionUser, Name: tradeOptUser,
+					Description: "Cu cine schimbi", Required: true},
+				{Type: discordgo.ApplicationCommandOptionString, Name: tradeOptGive,
+					Description: "Ce duplicat oferi", Required: true, Autocomplete: true},
+				{Type: discordgo.ApplicationCommandOptionString, Name: tradeOptWant,
+					Description: "Ce duplicat ceri", Required: true, Autocomplete: true},
+			}},
+		{Name: guessCommand, Description: guessDesc,
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        guessOption,
+				Description: "Numele personajului",
+				Required:    true,
+			}}},
+		// Administrator only, enforced by Discord itself: the command does not
+		// even appear for anyone else, so there is no permission check to forget.
+		{Name: spawnCommand, Description: spawnDesc,
+			DefaultMemberPermissions: &adminOnly,
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "monstru",
+				Description: "Care monstru (implicit: la întâmplare)",
+				Choices:     spawnChoices(),
+			}}},
+	}
+	gameIDs := make([]string, 0, len(games))
+	for _, gc := range games {
+		made, gerr := session.ApplicationCommandCreate(session.State.User.ID, cfg.GuildID, gc)
+		if gerr != nil {
+			slog.Error("register command /"+gc.Name, "err", gerr)
+			continue
+		}
+		gameIDs = append(gameIDs, made.ID)
+		slog.Info("command registered", "name", "/"+gc.Name, "scope", scope)
+	}
+
 	// Drop any command we registered under a previous name.
 	//
 	// Renaming the command does not retire the old one: Discord keeps every
@@ -106,8 +170,15 @@ func run() error {
 	if existing, lerr := session.ApplicationCommands(session.State.User.ID, cfg.GuildID); lerr != nil {
 		slog.Warn("list existing commands", "err", lerr)
 	} else {
+		// Every command this run registered, not just the invite: the sweep used
+		// to compare against a single id, so the moment a second command existed
+		// it deleted the one registered seconds earlier.
+		keep := map[string]bool{registered.ID: true}
+		for _, id := range gameIDs {
+			keep[id] = true
+		}
 		for _, c := range existing {
-			if c.ID == registered.ID {
+			if keep[c.ID] {
 				continue
 			}
 			if derr := session.ApplicationCommandDelete(session.State.User.ID, cfg.GuildID, c.ID); derr != nil {
@@ -197,11 +268,56 @@ func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 	// same way — same quota, same expiry, same attribution to the clicker — so
 	// neither can become a way around the rules the other enforces.
 	switch i.Type {
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		if i.ApplicationCommandData().Name == tradeCommand {
+			b.onTradeAutocomplete(s, i)
+		}
+		return
 	case discordgo.InteractionApplicationCommand:
+		// The games are their own handlers; only the invite falls through to the
+		// code below, which is entirely about minting and quota.
+		switch i.ApplicationCommandData().Name {
+		case dailyCommand:
+			b.onDaily(s, i)
+			return
+		case huntCommand:
+			b.onHunt(s, i)
+			return
+		case collectionCommand:
+			b.onCollectionCommand(s, i)
+			return
+		case profileCommand:
+			b.onProfile(s, i)
+			return
+		case attackCommand:
+			b.onAttack(s, i)
+			return
+		case spawnCommand:
+			b.onSpawn(s, i)
+			return
+		case guessCommand:
+			b.onGuess(s, i)
+			return
+		case tradeCommand:
+			b.onTrade(s, i)
+			return
+		}
 		if i.ApplicationCommandData().Name != b.cfg.CommandName {
 			return
 		}
 	case discordgo.InteractionMessageComponent:
+		if strings.HasPrefix(i.MessageComponentData().CustomID, "gacha:") {
+			b.onGachaButton(s, i)
+			return
+		}
+		if strings.HasPrefix(i.MessageComponentData().CustomID, colPrefix) {
+			b.onCollectionComponent(s, i)
+			return
+		}
+		if strings.HasPrefix(i.MessageComponentData().CustomID, "trade:") {
+			b.onTradeButton(s, i)
+			return
+		}
 		if i.MessageComponentData().CustomID != inviteButtonID {
 			return
 		}

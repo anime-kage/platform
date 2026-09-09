@@ -304,6 +304,26 @@ type BotConfig struct {
 	// which is enough to work but means nobody sees a false positive until
 	// somebody complains.
 	ModLogChannelID string
+
+	// UnlimitedIDs skip the daily and hunt cooldowns. Testing only.
+	UnlimitedIDs map[string]bool
+
+	// Where each game may run. Empty means anywhere, which is what a fresh
+	// install gets; setting them keeps the card game and the hunt in their own
+	// rooms instead of scrolling past whatever else is being discussed.
+	GachaChannelID string
+	HuntChannelID  string
+}
+
+// splitIDs parses a comma separated id list into a set.
+func splitIDs(raw string) map[string]bool {
+	out := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out[p] = true
+		}
+	}
+	return out
 }
 
 func LoadBot() (*BotConfig, error) {
@@ -318,6 +338,13 @@ func LoadBot() (*BotConfig, error) {
 		// speed bump on the one command that is the front door to the site.
 		CommandName: envOr("DISCORD_INVITE_COMMAND", "invitatie"),
 		PublicURL:   strings.TrimRight(envOr("PUBLIC_URL", "https://anime-kage.ro"), "/"),
+
+		// Discord ids that skip the game cooldowns. For testing on a staging
+		// guild: left empty in production, where an unlimited /daily would let
+		// one account farm the shared economy the site also spends.
+		UnlimitedIDs:   splitIDs(os.Getenv("DISCORD_UNLIMITED_IDS")),
+		GachaChannelID: os.Getenv("DISCORD_GACHA_CHANNEL_ID"),
+		HuntChannelID:  os.Getenv("DISCORD_HUNT_CHANNEL_ID"),
 
 		ProtectionChannelID: os.Getenv("DISCORD_PROTECTION_CHANNEL_ID"),
 		MutedRoleID:         os.Getenv("DISCORD_MUTED_ROLE_ID"),

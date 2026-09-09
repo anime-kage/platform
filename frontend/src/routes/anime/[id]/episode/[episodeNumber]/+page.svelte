@@ -357,12 +357,24 @@
 
             An `extract` source played in our own player needs none of this, and
             is the only path that carries our RO subtitle and skip marks.
+
+            - The `*` on each feature is load-bearing. Without an origin, a
+              Permissions Policy feature defaults to 'src', granting it only to the
+              framed origin itself. These hosts routinely nest a second iframe from
+              a different CDN domain for the real player, and that nested frame is
+              not 'src', so fullscreen was denied to it. It failed only on the
+              sources that nest, and only on mobile, because desktop players fall
+              back to a CSS pseudo fullscreen that looks right while iOS and
+              Android have only the real one. `allowfullscreen` does not cover it:
+              per spec that attribute equals `allow="fullscreen"`, so it resolves
+              to 'src' as well. The widening covers autoplay, fullscreen and PiP
+              only, a far smaller grant than framing the host at all.
           -->
           <iframe
             src={current.hostingUrl}
             title={`${displayName(a)} — ${epTitle}`}
             allowfullscreen
-            allow="autoplay; fullscreen; picture-in-picture"
+            allow="autoplay *; fullscreen *; picture-in-picture *"
             referrerpolicy="no-referrer"
           ></iframe>
         {:else}

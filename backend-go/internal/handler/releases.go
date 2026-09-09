@@ -294,7 +294,12 @@ func (h *Handler) createRelease(w http.ResponseWriter, r *http.Request) {
 		videoExt = strings.ToLower(filepath.Ext(videoHdr.Filename))
 	}
 	if !videoExts[videoExt] {
-		httpx.Error(w, http.StatusBadRequest, "Video must be .mp4, .webm, .mkv or .m4v")
+		got := videoExt
+		if got == "" {
+			got = "(no extension)"
+		}
+		httpx.Error(w, http.StatusBadRequest, fmt.Sprintf(
+			"Fișierul trebuie să fie .mp4, .webm, .mkv sau .m4v — acesta este %s.", got))
 		return
 	}
 
@@ -323,8 +328,27 @@ func (h *Handler) createRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.Internal(w, "create release", err)
 		return
 	}
+	// A presigned upload is already in the bucket by the time this handler
+	// runs, and every teardown below destroys the only row that would ever
+	// name it. Deleting the object here is what keeps an abandoned submit from
+	// leaving a full episode in R2 for ever.
+	//
+	// The context is deliberately detached: several of these paths fire
+	// precisely because the client went away, and a cancelled context turns
+	// the delete into a silent no-op — which is the leak this exists to close.
+	dropUpload := func() {
+		if r2Key == "" || h.storage == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+		defer cancel()
+		if err := h.storage.Delete(ctx, r2Key); err != nil {
+			slog.Warn("delete orphaned R2 upload", "release", rel.ID, "key", r2Key, "err", err)
+		}
+	}
 	// from here on, failures must tear the half-made release down again
 	fail := func(action string, err error) {
+		dropUpload()
 		_ = os.RemoveAll(filepath.Join(h.cfg.StagingDir, strconv.Itoa(rel.ID)))
 		if _, derr := h.repo.DeleteRelease(r.Context(), rel.ID); derr != nil {
 			slog.Error("orphaned release after failed create", "id", rel.ID, "err", derr)
@@ -334,6 +358,7 @@ func (h *Handler) createRelease(w http.ResponseWriter, r *http.Request) {
 	// failClient is fail's 4xx sibling: the user's input was the problem, so
 	// report it plainly instead of a 500.
 	failClient := func(status int, msg string) {
+		dropUpload()
 		_ = os.RemoveAll(filepath.Join(h.cfg.StagingDir, strconv.Itoa(rel.ID)))
 		if _, derr := h.repo.DeleteRelease(r.Context(), rel.ID); derr != nil {
 			slog.Error("orphaned release after client error", "id", rel.ID, "err", derr)
@@ -359,6 +384,15 @@ func (h *Handler) createRelease(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("verify R2 video", "release", rel.ID, "key", r2Key, "err", cerr)
 			return
 		}
+		// Ownership is recorded the moment the object is known to be intact,
+		// before any further step can fail. While r2_key is still NULL the row
+		// does not name the object, so a teardown in that window would delete
+		// the row and strand the bytes beyond the reach of deleteRelease and
+		// the published-release sweep alike.
+		if err := h.repo.SetReleaseR2Key(r.Context(), rel.ID, &r2Key); err != nil {
+			fail("save r2 key", err)
+			return
+		}
 		url, uerr := h.storage.PresignGet(r.Context(), r2Key, presignTTL)
 		if uerr != nil {
 			fail("presign uploaded video", uerr)
@@ -380,12 +414,7 @@ func (h *Handler) createRelease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r2Key != "" {
-		if err := h.repo.SetReleaseR2Key(r.Context(), rel.ID, &r2Key); err != nil {
-			fail("save r2 key", err)
-			return
-		}
-	} else {
+	if r2Key == "" {
 		stagingPath := strconv.Itoa(rel.ID) + "/video" + videoExt
 		if err := h.repo.SetReleaseStagingPath(r.Context(), rel.ID, &stagingPath); err != nil {
 			fail("save staging path", err)
@@ -425,22 +454,40 @@ func (h *Handler) createRelease(w http.ResponseWriter, r *http.Request) {
 	// Merge into event rows. With only an EN sub the RO column starts empty
 	// (the editor's job). A RO sub is authoritative: its rows are the draft,
 	// marked edited (human work, auto-translate must not touch them); EN text
-	// is attached by index when the row counts line up, else left blank.
+	// is attached by time overlap, so the two files need not agree on how many
+	// lines they split the dialogue into.
 	events := make([]repo.EventInput, 0)
 	switch {
 	case roEvents != nil:
-		// EN pairs by index, so it needs the same row count; a retimed or
-		// re-split RO sub can't be lined up that way and keeps an empty
-		// source column rather than a misaligned one.
-		pairEN := enEvents != nil && len(enEvents) == len(roEvents)
-		if enEvents != nil && !pairEN {
-			slog.Warn("EN source dropped: row counts differ",
-				"release", rel.ID, "en", len(enEvents), "ro", len(roEvents))
+		// EN pairs by time, not by row index.
+		//
+		// Index pairing needed the two files to have exactly the same number of
+		// lines, and threw the whole English column away when they did not:
+		// release 11 lost all 315 of its source lines against a 450 line
+		// translation, because the translator split lines more finely than the
+		// track they were working from. Timing is what the two files actually
+		// agree on, and it survives splitting, merging and added sign lines.
+		var pairedEN []string
+		if enEvents != nil {
+			pairedEN = subs.PairByTime(roEvents, enEvents)
+			matched := 0
+			for _, t := range pairedEN {
+				if t != "" {
+					matched++
+				}
+			}
+			// Still worth a line in the log: a translation whose timings have
+			// drifted right off the source pairs badly, and the count is the
+			// only warning anyone gets before an editor opens it.
+			if matched < len(roEvents)/2 {
+				slog.Warn("EN source paired poorly, check the timings",
+					"release", rel.ID, "en", len(enEvents), "ro", len(roEvents), "matched", matched)
+			}
 		}
-		for _, e := range roEvents {
+		for i, e := range roEvents {
 			ev := repo.EventInput{Idx: e.Idx, StartMs: e.StartMs, EndMs: e.EndMs, RoText: e.Text, Edited: true}
-			if pairEN {
-				ev.EnText = enEvents[e.Idx].Text
+			if pairedEN != nil {
+				ev.EnText = pairedEN[i]
 			}
 			events = append(events, ev)
 		}
@@ -658,6 +705,47 @@ func (h *Handler) releaseEvents(w http.ResponseWriter, r *http.Request) {
 
 // PUT /api/releases/{id}/events/{idx} — per-row autosave from the editor.
 // The uploader edits drafts; a verifier may fix lines in review directly.
+// POST /api/releases/{id}/events — append one subtitle line.
+//
+// For a credit line, a translator's note, or anything else the source file did
+// not carry. Appends only; see repo.AppendEvent for why not insert.
+func (h *Handler) appendReleaseEvent(w http.ResponseWriter, r *http.Request) {
+	rel := h.loadRelease(w, r)
+	if rel == nil {
+		return
+	}
+	// Same rule as editing an existing line — kept identical on purpose.
+	editable := rel.State == "draft" || rel.State == "changes_requested" ||
+		(rel.State == "in_review" && canReview(r))
+	if !editable {
+		httpx.Error(w, http.StatusConflict, "Release is not editable in state '"+rel.State+"'")
+		return
+	}
+	var body struct {
+		StartMs *int    `json:"startMs"`
+		EndMs   *int    `json:"endMs"`
+		RoText  *string `json:"roText"`
+	}
+	if err := httpx.Decode(r, &body); err != nil || body.StartMs == nil || body.EndMs == nil || body.RoText == nil {
+		httpx.Error(w, http.StatusBadRequest, "startMs, endMs and roText are required")
+		return
+	}
+	if *body.StartMs < 0 || *body.EndMs < *body.StartMs {
+		httpx.Error(w, http.StatusBadRequest, "Intervalul este invalid (endMs trebuie sa fie dupa startMs)")
+		return
+	}
+	if strings.TrimSpace(*body.RoText) == "" {
+		httpx.Error(w, http.StatusBadRequest, "Textul nu poate fi gol")
+		return
+	}
+	ev, err := h.repo.AppendEvent(r.Context(), rel.ID, *body.StartMs, *body.EndMs, *body.RoText)
+	if err != nil {
+		httpx.Internal(w, "append event", err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"data": ev})
+}
+
 func (h *Handler) updateReleaseEvent(w http.ResponseWriter, r *http.Request) {
 	rel := h.loadRelease(w, r)
 	if rel == nil {
@@ -792,8 +880,11 @@ func (h *Handler) releaseDownloadMP4(w http.ResponseWriter, r *http.Request) {
 	if rel == nil {
 		return
 	}
-	if rel.Medium == "manga" || rel.StagingPath == nil {
-		httpx.Error(w, http.StatusNotFound, "Nu există video în staging pentru acest release")
+	// The video may be in the bucket rather than in staging — a direct-to-R2
+	// upload leaves staging_path NULL and sets r2_key. Both are valid; only the
+	// absence of both means there is nothing to serve.
+	if rel.Medium == "manga" || (rel.StagingPath == nil && (rel.R2Key == nil || *rel.R2Key == "")) {
+		httpx.Error(w, http.StatusNotFound, "Nu există video pentru acest release")
 		return
 	}
 	if !subs.HasFFmpeg() {
@@ -812,7 +903,14 @@ func (h *Handler) releaseDownloadMP4(w http.ResponseWriter, r *http.Request) {
 	tmp.Close()
 	defer os.Remove(tmp.Name())
 
-	videoPath := filepath.Join(h.cfg.StagingDir, filepath.FromSlash(*rel.StagingPath))
+	// videoSourceURL gives a presigned https URL for a bucket-hosted video, or
+	// the local path when it is still in staging. ffmpeg reads either, using
+	// range requests over https so it never needs a local copy.
+	videoPath, verr := h.videoSourceURL(r.Context(), rel)
+	if verr != nil {
+		httpx.Internal(w, "resolve video source", verr)
+		return
+	}
 	if err := subs.RemuxMP4(r.Context(), videoPath, tmp.Name()); err != nil {
 		httpx.Internal(w, "remux mp4", err)
 		return
@@ -841,8 +939,11 @@ func (h *Handler) releaseDownload(w http.ResponseWriter, r *http.Request) {
 	if rel == nil {
 		return
 	}
-	if rel.Medium == "manga" || rel.StagingPath == nil {
-		httpx.Error(w, http.StatusNotFound, "Nu există video în staging pentru acest release")
+	// The video may be in the bucket rather than in staging — a direct-to-R2
+	// upload leaves staging_path NULL and sets r2_key. Both are valid; only the
+	// absence of both means there is nothing to serve.
+	if rel.Medium == "manga" || (rel.StagingPath == nil && (rel.R2Key == nil || *rel.R2Key == "")) {
+		httpx.Error(w, http.StatusNotFound, "Nu există video pentru acest release")
 		return
 	}
 	if !subs.HasFFmpeg() {
@@ -864,7 +965,14 @@ func (h *Handler) releaseDownload(w http.ResponseWriter, r *http.Request) {
 	_, _ = tmp.WriteString(subs.WriteSRT(cues))
 	tmp.Close()
 
-	videoPath := filepath.Join(h.cfg.StagingDir, filepath.FromSlash(*rel.StagingPath))
+	// videoSourceURL gives a presigned https URL for a bucket-hosted video, or
+	// the local path when it is still in staging. ffmpeg reads either, using
+	// range requests over https so it never needs a local copy.
+	videoPath, verr := h.videoSourceURL(r.Context(), rel)
+	if verr != nil {
+		httpx.Internal(w, "resolve video source", verr)
+		return
+	}
 	w.Header().Set("Content-Type", "video/x-matroska")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.ro.mkv"`, downloadBase(rel)))
 	if err := subs.MuxSoftSub(r.Context(), videoPath, tmp.Name(), w); err != nil {
@@ -1067,6 +1175,22 @@ func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request) {
 			s.ProviderRef == nil || *s.ProviderRef == "") {
 			httpx.Error(w, http.StatusBadRequest, "Sursa: extract sources need provider and providerRef")
 			return
+		}
+		// "direct" means the ref IS the media. Pointing it at a file host's
+		// watch page passed validation happily and then failed at playback,
+		// several layers from the cause, with the episode silently falling
+		// back to the iframe. Say it here, where it can still be fixed.
+		if s.Kind == "extract" && s.Provider != nil && *s.Provider == "direct" {
+			ref := strings.ToLower(*s.ProviderRef)
+			if i := strings.IndexAny(ref, "?#"); i >= 0 {
+				ref = ref[:i]
+			}
+			if !strings.HasSuffix(ref, ".m3u8") && !strings.HasSuffix(ref, ".mp4") {
+				httpx.Error(w, http.StatusBadRequest,
+					"Sursa: 'direct' cere linkul fișierului video (.m3u8 sau .mp4), nu pagina gazdei — "+
+						"pentru o pagină alege extractorul potrivit (vtbe, filemoon, doodstream, luluvdo) sau kind='embed'")
+				return
+			}
 		}
 		if s.Language == "" {
 			s.Language = "ro"

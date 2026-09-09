@@ -11,8 +11,8 @@
     $auth.isAuthenticated && ['admin', 'coordinator'].includes($auth.user?.role ?? '')
   );
 
-  /** Must match emoteCodeRe on the server. */
-  const CODE_RE = /^[A-Za-z][A-Za-z0-9]{1,23}$/;
+  /** Must match emoteCodeRe on the server — keep the two in step. */
+  const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9]{0,23}$/;
   /** Mirrors .emote-img in ChatPanel — the preview has to be the real size. */
   const CHAT_H = 28;
 
@@ -135,7 +135,7 @@
           <span class="lbl">Nume</span>
           <input bind:value={code} placeholder="Kagege" maxlength="24" spellcheck="false" />
           {#if code && !codeOk}
-            <span class="warn">Numele începe cu o literă, 2–24 caractere, doar litere și cifre.</span>
+            <span class="warn">1–24 caractere, doar litere și cifre.</span>
           {:else if codeTaken}
             <span class="warn">Numele e deja folosit.</span>
           {/if}

@@ -907,6 +907,9 @@ export interface ChatMessage {
   username: string;
   role: string;
   avatarUrl?: string;
+  /** Present only on the pinned message, so a pin cannot disagree with the
+   *  message it sits on. */
+  pinnedAt?: string;
 }
 
 /**
@@ -939,4 +942,191 @@ export interface EpisodeReport {
   reporter?: string;
   createdAt: string;
   resolvedAt?: string;
+}
+
+// ── Arcade ──────────────────────────────────────────────────────────────────
+// Mirrors backend-go/internal/handler/games.go. The answer field is absent
+// until a puzzle is finished for that player — the server decides, not the UI.
+
+export interface GameCell {
+  key: string;
+  value: string;
+  /** 'hit' | 'near' | 'miss' */
+  state: string;
+  /** 'up' = the answer is higher than this guess, 'down' = lower */
+  dir?: string;
+  parts?: string[];
+  partStates?: string[];
+}
+
+export interface GameGuessRow {
+  animeId: number;
+  title: string;
+  image?: string;
+  correct: boolean;
+  cells: GameCell[];
+}
+
+export interface GameSummaryCell {
+  key: string;
+  value: string;
+  state: string;
+}
+
+export interface GameColumn {
+  key: string;
+  label: string;
+}
+
+export interface GameCharSlot {
+  id: number;
+  image: string;
+  /** Filled only once the round is scored. */
+  name?: string;
+  series?: string;
+  gaveName: boolean;
+  gaveSeries: boolean;
+}
+
+export interface GameCharHit {
+  id: number;
+  name: string;
+  image: string;
+}
+
+export interface GameClue {
+  label: string;
+  value: string;
+}
+
+export interface GameAnswer {
+  title: string;
+  image?: string;
+  slug?: string;
+  year?: number;
+}
+
+export interface GameGroupTile {
+  animeId: number;
+  title: string;
+  image?: string;
+}
+
+export interface GameFoundGroup {
+  label: string;
+  animeIds: number[];
+  /** The raw fact behind the group, so the label can be written with the
+   *  catalogue's own genre helper instead of the English the database holds. */
+  kind: 'studio' | 'year' | 'genre' | '';
+  value: string;
+  /** True when the player picked it out; false when it was revealed because
+   *  the round ended. A lost board should not read like a won one. */
+  solved: boolean;
+}
+
+export interface GamePuzzle {
+  id: number;
+  mode: 'title' | 'poster' | 'theme' | 'character' | 'groups';
+  playDate: string;
+  isToday: boolean;
+  solved: boolean;
+  gaveUp: boolean;
+  finished: boolean;
+  remaining: number;
+  stage: number;
+  awardedXp: number;
+  clues: GameClue[];
+  grid: GameGuessRow[];
+  summary: GameSummaryCell[];
+  image?: string;
+  answer?: GameAnswer;
+  /** The synopsis clue: offered late, costs 25% of the award. */
+  hintReady: boolean;
+  hintUsed: boolean;
+  hint?: string;
+  /** Theme mode: audio plays while guessing, video is the paid final clue. */
+  audio?: string;
+  video?: string;
+  themeSlug?: string;
+  themeSong?: string;
+  /** Grupe: sixteen tiles, four hidden groups. `found` holds only the groups
+   *  already picked out; the rest arrive when the round ends. */
+  tiles?: GameGroupTile[];
+  found?: GameFoundGroup[];
+  mistakes: number;
+  maxMistakes?: number;
+  /** Character round: five portraits, one submission. */
+  chars?: GameCharSlot[];
+  scored: boolean;
+  charXp?: number;
+  charGold?: number;
+}
+
+export interface GameBadgeDef {
+  code: string;
+  name: string;
+  desc: string;
+  icon: string;
+}
+
+export interface GameRank {
+  minLevel: number;
+  title: string;
+}
+
+export interface GameFaction {
+  code: string;
+  name: string;
+  emoji: string;
+  ranks: GameRank[];
+}
+
+export interface GameProfile {
+  username: string;
+  level: number;
+  xp: number;
+  xpInto: number;
+  xpSpan: number;
+  gold: number;
+  faction?: string;
+  rank?: string;
+  badges: string[];
+  /** XP held in each faction, keyed by faction code. Progress is per faction:
+   *  switching away preserves it, switching back restores it. */
+  progress: Record<string, number>;
+  /** Earned before any faction was chosen, and claimed by choosing one. */
+  pendingXp?: number;
+}
+
+export interface GameChest {
+  streak: number;
+  canClaim: boolean;
+  /** When the chest next becomes claimable, from the server clock. */
+  nextAt: string;
+  /** What the next open pays, at the streak it would reach. */
+  nextGold: number;
+}
+
+/** One line of the arcade leaderboard. Ranked on the active faction's XP —
+ *  the same number the player's own profile card shows. */
+export interface GameLeaderRow {
+  rank: number;
+  username: string;
+  avatarUrl?: string;
+  faction?: string;
+  factionName?: string;
+  rankTitle?: string;
+  level: number;
+  xp: number;
+  gold: number;
+}
+
+export interface GameBoard {
+  profile: GameProfile;
+  puzzles: GamePuzzle[];
+  factions: GameFaction[];
+  maxGuesses: number;
+  badgeCatalogue: GameBadgeDef[];
+  columns: GameColumn[];
+  chest: GameChest;
 }

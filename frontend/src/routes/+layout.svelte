@@ -18,7 +18,21 @@
   // matters most on the team pages (admin/translate/verify/publish), where the
   // right edge is a working column, but nothing should sit under the drawer
   const auth = $derived($authStore);
-  const chatDocked = $derived(auth.isAuthenticated && $chatOpen);
+  // Routes that suppress the chat drawer.
+  //
+  // Empty on purpose. /arcade was listed while its layout put a panel in the
+  // right column, which is exactly where the drawer docks; that layout is now
+  // a full-width tab view with the profile as a strip along the top, so there
+  // is nothing to collide with.
+  //
+  // Kept as a list rather than deleted: when a route does need the right edge
+  // it belongs here, and hiding it this way is safe. Unmounting the component
+  // instead tears down its EventSource and re-runs four effects on every
+  // navigation in and out of the route.
+  const CHAT_FREE: string[] = [];
+  const chatHidden = $derived(CHAT_FREE.some((r) => page.url.pathname.startsWith(r)));
+  const chatDocked = $derived(auth.isAuthenticated && $chatOpen && !chatHidden);
+
 
   onMount(async () => {
     await authStore.init();
@@ -64,7 +78,7 @@
   </main>
   <Footer />
   <Toast />
-  <ChatPanel />
+  <div class="chat-slot" class:chat-off={chatHidden}><ChatPanel /></div>
 </div>
 
 <style>
@@ -84,6 +98,11 @@
      minmax(0, 1fr) now and the squeeze is harmless. Below 1100px the
      leftover column would be under ~760px, so the panel overlays instead
      (see ChatPanel). The header keeps full width above the drawer. */
+  /* The panel positions itself; this wrapper only exists so a route can switch
+     it off without unmounting it. */
+  .chat-slot { display: contents; }
+  .chat-slot.chat-off { display: none; }
+
   @media (min-width: 1100px) {
     .app-shell.chat-docked main {
       padding-right: var(--chat-w);

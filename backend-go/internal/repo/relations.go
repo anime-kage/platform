@@ -41,7 +41,12 @@ func (r *Repo) ReplaceAnimeRelations(ctx context.Context, animeID int, rows []Re
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `DELETE FROM anime_relations WHERE anime_id = $1`, animeID); err != nil {
+	// NOT manual: a hand-pinned correlation describes a shape our catalog has
+	// and AniList does not (merged seasons, titles we deliberately skip), so the
+	// sync must not undo it. Without this guard every manual fix lasted until
+	// 04:15 the next morning.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM anime_relations WHERE anime_id = $1 AND NOT manual`, animeID); err != nil {
 		return err
 	}
 	for _, row := range rows {
@@ -101,7 +106,9 @@ func (r *Repo) SeasonChain(ctx context.Context, animeID int) ([]model.RelatedAni
 	}
 
 	// walk follows one direction, returning the titles found in the order met.
-	walk := func(from int, kind string) ([]step, error) {
+	// `opposite` is the relation that points back the other way, used only by
+	// the bridge query below.
+	walk := func(from int, kind, opposite string) ([]step, error) {
 		out := []step{}
 		seen := map[int]bool{from: true}
 		cur := from
@@ -112,8 +119,47 @@ func (r *Repo) SeasonChain(ctx context.Context, animeID int) ([]model.RelatedAni
 				FROM anime_relations ar
 				JOIN anime rel ON rel.mal_id = ar.related_mal_id
 				WHERE ar.anime_id = $1 AND ar.relation = $2
-				ORDER BY rel.year NULLS LAST, rel.id
+				-- A television entry wins whenever there is one, and only then
+				-- does the year decide. A season chain is a run of seasons: when
+				-- MAL lists both a side film and the next series as SEQUEL, the
+				-- earliest-year rule quietly picked the film, and the chain
+				-- stopped at it. Naruto: Shippuden led to a Boruto special
+				-- rather than to Boruto itself for exactly that reason, and
+				-- Dragon Ball, Laid-Back Camp and Shakugan no Shana all broke
+				-- the same way the night new edges arrived.
+				--
+				-- Still a preference and not a filter: some series genuinely
+				-- continue as a film, and those should keep their chain.
+				ORDER BY (rel.type <> 'tv'), rel.year NULLS LAST, rel.id
 				LIMIT 1`, cur, kind)
+
+			// Nothing directly adjacent. MAL splits seasons we carry as one
+			// entry, so the edge out of a merged season often points at a part
+			// we deliberately do not stock, and the walk used to stop dead
+			// there. Attack on Titan was the case that surfaced it: season 3
+			// leads to MAL 38524 (season 3 part 2), which we do not carry, and
+			// The Final Season points back at the same missing entry. Two
+			// titles reaching for the same absent one from opposite directions
+			// are adjacent in our catalogue even though MAL has a step between
+			// them, so cross that gap rather than ending the chain.
+			//
+			// Only ever a fallback: a real edge always wins, so this cannot
+			// reroute a chain that already resolves.
+			if err != nil && (pgxscan.NotFound(err) || err == pgx.ErrNoRows) {
+				err = pgxscan.Get(ctx, r.pool, &next, `
+					SELECT $2::text AS relation, `+relatedCols+`
+					FROM anime_relations mine
+					JOIN anime_relations theirs
+					  ON theirs.related_mal_id = mine.related_mal_id
+					 AND theirs.relation = $3
+					 AND theirs.anime_id <> mine.anime_id
+					JOIN anime rel ON rel.id = theirs.anime_id
+					WHERE mine.anime_id = $1 AND mine.relation = $2
+					  AND NOT EXISTS (
+					        SELECT 1 FROM anime x WHERE x.mal_id = mine.related_mal_id)
+					ORDER BY (rel.type <> 'tv'), rel.year NULLS LAST, rel.id
+					LIMIT 1`, cur, kind, opposite)
+			}
 			if err != nil {
 				if pgxscan.NotFound(err) || err == pgx.ErrNoRows {
 					break
@@ -130,11 +176,11 @@ func (r *Repo) SeasonChain(ctx context.Context, animeID int) ([]model.RelatedAni
 		return out, nil
 	}
 
-	back, err := walk(animeID, "PREQUEL")
+	back, err := walk(animeID, "PREQUEL", "SEQUEL")
 	if err != nil {
 		return nil, err
 	}
-	fwd, err := walk(animeID, "SEQUEL")
+	fwd, err := walk(animeID, "SEQUEL", "PREQUEL")
 	if err != nil {
 		return nil, err
 	}

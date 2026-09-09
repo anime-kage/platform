@@ -32,6 +32,14 @@ func TestMemberFacingTextAvoidsDashes(t *testing.T) {
 	for name, text := range map[string]string{
 		"boardText":        b.boardText(),
 		"protectionNotice": b.protectionNotice(),
+		"dailyDesc":        dailyDesc,
+		"collectionDesc":   collectionDesc,
+		"huntDesc":         huntDesc,
+		"profileDesc":      profileDesc,
+		"attackDesc":       attackDesc,
+		"spawnDesc":        spawnDesc,
+		"guessDesc":        guessDesc,
+		"tradeDesc":        tradeDesc,
 	} {
 		for _, bad := range []string{"—", "–", " -- "} {
 			if strings.Contains(text, bad) {

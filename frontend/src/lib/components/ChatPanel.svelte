@@ -1,6 +1,6 @@
 <script lang="ts">
   import GifPicker from '$lib/components/GifPicker.svelte';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { authStore } from '$lib/stores/auth';
   import { chatOpen, initChatOpen, toggleChat } from '$lib/stores/chat';
   import { ROLE_BADGES, EMOTES } from '$lib/data/community';
@@ -87,6 +87,26 @@
   // roles get both (the server is the authority — chatmod.go)
   const CHAT_STAFF = ['translator', 'verifier', 'coordinator', 'moderator', 'admin'];
   const canModerate = $derived(CHAT_STAFF.includes(auth.user?.role ?? ''));
+
+  /* The pinned message, or null when the room has none. Kept apart from the
+     message list because it must stay visible while the log scrolls, and it may
+     point at a message that has already scrolled out of the backlog. */
+  let pinnedMsg = $state<ChatMessage | null>(null);
+  let pinning = $state(false);
+
+  /* The pinned bar clamps to two lines. The expand control only earns its place
+     when the text actually overflows, so it is measured rather than assumed: a
+     chevron on a six-word pin is clutter that teaches people to ignore chevrons. */
+  let pinExpanded = $state(false);
+  let pinTxtEl = $state<HTMLElement | null>(null);
+  let pinOverflows = $state(false);
+
+  $effect(() => {
+    pinnedMsg; // re-measure whenever the pinned message changes
+    if (!pinTxtEl || pinExpanded) return;
+    // Only meaningful while clamped: expanded, scrollHeight equals clientHeight.
+    pinOverflows = pinTxtEl.scrollHeight > pinTxtEl.clientHeight + 1;
+  });
   const MAX = 500;
 
   // mirrors chatRank in the backend — a card must not offer a button the
@@ -170,12 +190,78 @@
   // view down while someone is reading scrollback is the classic chat sin.
   let pinned = true;
   function onScroll() {
-    if (!scroller) return;
+    if (!scroller || selfScrolling) return;
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60;
   }
+  // Set while WE are scrolling, so onScroll ignores the resulting event.
+  //
+  // Without this the retries below cannot work: our own scroll fires a scroll
+  // event, onScroll measures a position that is briefly not the bottom (the
+  // content is still growing), sets pinned = false, and every later attempt
+  // becomes a no-op. The panel then stays wherever the first bad scroll left
+  // it — which is exactly the "opens in the middle" symptom.
+  let selfScrolling = false;
+  function stickToBottom() {
+    if (!scroller || !pinned) return;
+    selfScrolling = true;
+    scroller.scrollTop = scroller.scrollHeight;
+    // Cleared after the event has been dispatched, not synchronously.
+    requestAnimationFrame(() => (selfScrolling = false));
+  }
+
+  // Scrolling once, immediately, is not enough — that was the bug. When the
+  // panel opens, the effect runs before the browser has laid the new messages
+  // out, so scrollHeight is still the OLD height and the scroll lands part-way
+  // up. Then emote images and GIFs finish loading and push everything further
+  // down.
+  //
+  // So: after Svelte has flushed the DOM (tick), again after the browser has
+  // laid it out (rAF), and once more shortly after for anything that settles
+  // late. All three are no-ops when already at the bottom.
+  async function stickSoon() {
+    stickToBottom();
+    await tick();
+    stickToBottom();
+    requestAnimationFrame(() => {
+      stickToBottom();
+      setTimeout(stickToBottom, 120);
+    });
+  }
+
   $effect(() => {
+    // BOTH dependencies matter. The scroller only exists inside {#if open}, and
+    // messages are usually already loaded before the panel is opened — so an
+    // effect that watches only messages.length fires while scroller is still
+    // null, returns early, and never runs again because the message count does
+    // not change when the panel mounts. The panel then renders at scrollTop 0,
+    // showing the OLDEST loaded message. Reading `scroller` here re-runs this
+    // the moment the element appears.
     messages.length;
-    if (scroller && pinned) scroller.scrollTop = scroller.scrollHeight;
+    if (!scroller) return;
+    // A freshly opened panel always starts at the bottom, whatever the previous
+    // session left behind.
+    pinned = true;
+    stickSoon();
+  });
+
+  // Content that arrives after layout: emote images, GIFs, a late web font.
+  //
+  // A ResizeObserver on the scroller itself is useless here — it fires when
+  // that element's own box changes, and the scroller is a fixed-height
+  // viewport whose scrollHeight grows underneath it without its box moving.
+  // Watch the CONTENT for added nodes instead, and watch images for load.
+  $effect(() => {
+    if (!scroller) return;
+    const mo = new MutationObserver(() => stickToBottom());
+    mo.observe(scroller, { childList: true, subtree: true });
+    const onLoad = (e: Event) => {
+      if ((e.target as HTMLElement)?.tagName === 'IMG') stickToBottom();
+    };
+    scroller.addEventListener('load', onLoad, true); // capture: load does not bubble
+    return () => {
+      mo.disconnect();
+      scroller?.removeEventListener('load', onLoad, true);
+    };
   });
 
   // ── live connection ───────────────────────────────────────────────────────
@@ -192,6 +278,7 @@
         const r = await api.getChatMessages();
         if (stopped) return;
         messages = r.data;
+        pinnedMsg = r.pinned ?? null;
         viewers = r.viewers;
       } catch {
         if (!stopped) toast.error('Chatul nu a putut fi încărcat.');
@@ -213,6 +300,11 @@
         const { id } = JSON.parse((e as MessageEvent).data);
         messages = messages.filter((m) => m.id !== id);
       });
+      es.addEventListener('pin', (e) => {
+        const raw = (e as MessageEvent).data;
+        pinnedMsg = raw && raw !== 'null' ? (JSON.parse(raw) as ChatMessage) : null;
+        pinExpanded = false;
+      });
       es.addEventListener('viewers', (e) => {
         viewers = JSON.parse((e as MessageEvent).data).viewers;
       });
@@ -224,6 +316,31 @@
       connected = false;
     };
   });
+
+  async function pin(m: ChatMessage) {
+    if (pinning) return;
+    pinning = true;
+    try {
+      await api.pinChatMessage(m.id);
+      // the SSE 'pin' event fills the bar for everyone, this client included
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Nu am putut fixa mesajul');
+    } finally {
+      pinning = false;
+    }
+  }
+
+  async function unpin() {
+    if (pinning) return;
+    pinning = true;
+    try {
+      await api.unpinChatMessage();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Nu am putut anula fixarea');
+    } finally {
+      pinning = false;
+    }
+  }
 
   async function send() {
     const t = input.trim();
@@ -350,6 +467,26 @@
         <button class="collapse" onclick={toggle} title="Închide chatul">»</button>
       </div>
 
+      {#if pinnedMsg}
+        <div class="pinned">
+          <span class="pin-ico" aria-hidden="true">📌</span>
+          <div class="pin-body">
+            <span class="pin-who">{pinnedMsg.username}</span>
+            <span class="pin-txt" class:open={pinExpanded} bind:this={pinTxtEl}>{pinnedMsg.body}</span>
+          </div>
+          <div class="pin-actions">
+            {#if canModerate}
+              <button class="pin-x" title="Anulează fixarea" disabled={pinning}
+                      onclick={unpin}>×</button>
+            {/if}
+            {#if pinOverflows || pinExpanded}
+              <button class="pin-more" aria-expanded={pinExpanded}
+                      title={pinExpanded ? 'Restrânge' : 'Extinde mesajul'}
+                      onclick={() => (pinExpanded = !pinExpanded)}>{pinExpanded ? '⌃' : '⌄'}</button>
+            {/if}
+          </div>
+        </div>
+      {/if}
       <div class="msgs" bind:this={scroller} onscroll={onScroll}>
         {#if loading}
           <p class="chat-note">Se încarcă…</p>
@@ -397,8 +534,8 @@
               {#if part.kind === 'spoiler'}
                 <Spoiler>
                   {#each tokenize(part.text) as tk (tk.key)}
-                    {#if tk.emoteUrl}<img class="emote-img" src={tk.emoteUrl} alt={tk.raw} title={tk.raw} loading="lazy" />
-                      {:else if tk.emote}<span class="emote" title={tk.raw}>{tk.emote}</span
+                    {#if tk.emoteUrl}<span class="emote-wrap" data-name={tk.raw}><img class="emote-img" src={tk.emoteUrl} alt={tk.raw} loading="lazy" /></span>
+                      {:else if tk.emote}<span class="emote emote-wrap" data-name={tk.raw}>{tk.emote}</span
                       >{:else if tk.mention}<span class="chat-mention">{tk.raw}</span
                       >{:else}{tk.raw}{/if}
                   {/each}
@@ -407,13 +544,17 @@
                 <img class="chat-gif" src={part.url} alt="GIF" loading="lazy" referrerpolicy="no-referrer" />
               {:else}
                 {#each tokenize(part.text) as tk (tk.key)}
-                  {#if tk.emoteUrl}<img class="emote-img" src={tk.emoteUrl} alt={tk.raw} title={tk.raw} loading="lazy" />
-                    {:else if tk.emote}<span class="emote" title={tk.raw}>{tk.emote}</span
+                  {#if tk.emoteUrl}<span class="emote-wrap" data-name={tk.raw}><img class="emote-img" src={tk.emoteUrl} alt={tk.raw} loading="lazy" /></span>
+                    {:else if tk.emote}<span class="emote emote-wrap" data-name={tk.raw}>{tk.emote}</span
                     >{:else if tk.mention}<span class="chat-mention">{tk.raw}</span
                     >{:else}{tk.raw}{/if}
                 {/each}
               {/if}
             {/each}
+            {#if canModerate}
+              <button class="msg-pin" title="Fixează mesajul" disabled={pinning}
+                      onclick={() => pin(m)}>📌</button>
+            {/if}
             <button class="msg-reply" title="Răspunde" onclick={() => startReply(m.username, m.body, m.id)}>↩</button>
             {#if canModerate || m.userId === auth.user?.id}
               <button class="msg-del" title="Șterge mesajul" onclick={() => remove(m)}>×</button>
@@ -508,7 +649,16 @@
   }
   .collapse:hover { background: var(--surface-overlay); color: var(--text-primary); }
 
-  .msgs { flex: 1; overflow-y: auto; padding: 8px 0; min-height: 0; }
+  /* overflow-anchor: none because this panel does its own stick-to-bottom.
+     Chrome's scroll anchoring picks a node and shifts scrollTop to keep it
+     visually still when layout changes around it. A late emote, GIF or web font
+     therefore moved the scroll position AND fired a scroll event that did not
+     come from us -- so onScroll saw selfScrolling false, measured a position
+     off the bottom, and set pinned = false. Every later stickToBottom() was
+     then a no-op and the panel sat just above the newest message. Intermittent
+     by nature: it needed something to finish loading late enough to shift the
+     layout after the last scroll attempt. */
+  .msgs { flex: 1; overflow-y: auto; padding: 8px 0; min-height: 0; overflow-anchor: none; }
   /* The body sets the row's type scale: the name and the badge are sized in
      `em`, so they track it and the three stay in proportion. The timestamp is
      the one thing pinned in `rem` — it's a label, not content, and it should
@@ -619,6 +769,41 @@
      Twitch uses: a fixed height, width:auto so the aspect is kept, and a
      max-width so an unusually wide emote cannot stretch the line. Nothing is
      resized on upload — this is what normalises them. */
+  /* The name, shown instantly on hover. This replaces the native `title`
+     tooltip, which waits about a second before appearing and renders in the
+     OS style — easy to miss mid-conversation, which is why it read as
+     missing. One limit worth knowing: the message list is a scroll
+     container, so the tooltip on an emote in the topmost visible row is
+     clipped by that edge. Everywhere else it has room. */
+  .emote-wrap {
+    position: relative;
+    display: inline-block;
+    vertical-align: middle;
+  }
+  .emote-wrap::after {
+    content: attr(data-name);
+    position: absolute;
+    bottom: calc(100% + 5px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 3px 7px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-overlay);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-micro);
+    line-height: 1.4;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+    z-index: 5;
+  }
+  .emote-wrap:hover::after {
+    opacity: 1;
+  }
+
   .emote-img {
     /* inline-block is load-bearing: base.css resets `img` to display:block,
        so without this an emote breaks out of the sentence onto its own line. */
@@ -661,6 +846,66 @@
     transition: opacity var(--motion-fast) var(--ease);
   }
   .msg-del:hover { color: var(--danger); }
+  /* The pin control sits with the other per-message actions and appears on
+     hover the same way, so it does not add permanent clutter to every line. */
+  .msg:hover .msg-pin { opacity: 1; }
+  /* Sits immediately left of the reply button and shares its treatment, so the
+     two staff actions read as one pair rather than one floating control and one
+     anchored one. 34px = reply's 8px offset + its 22px width + a 4px gap. */
+  .msg-pin {
+    position: absolute; top: 3px; right: 34px;
+    width: 22px; height: 22px; border-radius: 6px; border: none;
+    background: var(--surface-raised); color: var(--text-muted);
+    cursor: pointer; font-size: 0.7rem; line-height: 1;
+    display: grid; place-items: center;
+    opacity: 0; transition: opacity 0.12s;
+  }
+  .msg:hover .msg-pin { opacity: 1; }
+  .msg-pin:hover { color: var(--accent); }
+  .msg-pin:disabled { cursor: not-allowed; }
+
+  /* The pinned bar is outside the scroller on purpose: it has to stay put while
+     the log moves under it, which is the whole point of pinning. */
+  .pinned {
+    display: flex; align-items: flex-start; gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: color-mix(in srgb, var(--accent) 26%, var(--surface-raised));
+    border-bottom: 2px solid var(--accent);
+    flex: none;
+  }
+  .pin-ico { font-size: 0.8rem; line-height: 1.4; flex: none; }
+  .pin-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .pin-who { font-size: var(--fs-micro); font-weight: 700; color: var(--accent); }
+  /* Two lines at most: a pinned wall of text would eat the room it sits above. */
+  .pin-txt {
+    font-size: var(--fs-micro); color: var(--text-primary); word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+  }
+  /* Expanded still has a ceiling and scrolls past it: a 500-character pin is
+     allowed, and letting it push the whole room off screen is not. */
+  .pin-txt.open {
+    display: block; overflow-y: auto; max-height: 7.5rem;
+    -webkit-line-clamp: none; line-clamp: none;
+  }
+  /* Unpin on top, expand under it: one column of controls on the right rather
+     than two buttons competing for the same row as the text. */
+  .pin-actions {
+    margin-left: auto; flex: none; align-self: stretch;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: space-between;
+  }
+  .pin-more {
+    padding: 0 4px; background: none; border: 0;
+    cursor: pointer; line-height: 1; font-size: 0.85rem; color: var(--text-muted);
+  }
+  .pin-more:hover { color: var(--accent); }
+
+  .pin-x {
+    padding: 0 4px; background: none; border: 0;
+    cursor: pointer; line-height: 1; font-size: 0.95rem; color: var(--text-muted);
+  }
+  .pin-x:hover { color: var(--danger); }
 
   /* the dot stops pulsing and greys out while the stream is reconnecting */
   .online.off { color: var(--text-muted); }

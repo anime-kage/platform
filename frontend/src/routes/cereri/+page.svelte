@@ -335,7 +335,7 @@
 </div>
 
 <style>
-  .cereri { padding-block: var(--space-6) var(--space-8); max-width: 1120px; }
+  .cereri { padding-block: var(--space-6) var(--space-8); max-width: var(--container); }
 
   .top {
     display: flex; align-items: flex-end; justify-content: space-between;

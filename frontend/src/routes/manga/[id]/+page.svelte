@@ -6,6 +6,8 @@
   import PosterGrid from '$lib/components/PosterGrid.svelte';
   import CommentSection from '$lib/components/CommentSection.svelte';
   import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+  import { onMount } from 'svelte';
+  import { emotes as emoteStore, loadEmotes, emoteMap, appendPick } from '$lib/stores/emotes';
   import StatusPicker from '$lib/components/StatusPicker.svelte';
   import { authStore } from '$lib/stores/auth';
   import api from '$lib/api';
@@ -13,6 +15,16 @@
   import { toast } from '$lib/stores/toast';
   import { displayName, displaySynopsis, genreRo, titleRef } from '$lib/types';
   import type { Review } from '$shared/types';
+
+
+  /* Uploaded emotes for the review box. Only customEmotes is passed to the
+     picker, deliberately: the stock shortcode map that chat also passes maps
+     codes to glyphs, and RichText — which renders reviews — does not expand
+     those, so offering them would insert codes that stay as literal text. */
+  onMount(() => {
+    loadEmotes();
+  });
+  const customEmotes = $derived(emoteMap($emoteStore));
 
   let { data } = $props();
   const m = $derived(data.manga);
@@ -443,7 +455,7 @@
           ></textarea>
           <div class="rev-compose-foot">
             <div class="rev-foot-left">
-              <EmojiPicker onPick={(e) => (myReview += e)} />
+              <EmojiPicker {customEmotes} onPick={(e) => (myReview = appendPick(myReview, e, customEmotes))} />
               <SpoilerButton bind:value={myReview} input={reviewEl} />
               <GifPicker onPick={(url) => (myReview = myReview ? `${myReview} ${url}` : url)} />
               <span class="rev-count">{myReview.length}/4000</span>

@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"animekage/backend/internal/httpx"
+	"animekage/backend/internal/model"
 	"animekage/backend/internal/middleware"
 )
 
@@ -42,6 +43,7 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 		httpx.Internal(w, "list notifications", err)
 		return
 	}
+	refreshActorText(items)
 	unread, err := h.repo.UnreadCount(r.Context(), uid)
 	if err != nil {
 		httpx.Internal(w, "count notifications", err)
@@ -117,5 +119,35 @@ func (h *Handler) notifyWatchers(ctx context.Context, animeID, epNum int, link s
 	body := fmt.Sprintf("%s — episodul %d a fost publicat cu subtitrare RO.", title, epNum)
 	for _, uid := range ids {
 		h.notify(ctx, uid, "release", body, nil, &link)
+	}
+}
+
+// FollowBody is the one place the sentence lives, so a notification rendered
+// months after it was written reads the same as one written today.
+func FollowBody(username string) string {
+	return username + " a început să te urmărească."
+}
+
+// refreshActorText re-renders follow notifications from the actor's CURRENT
+// username.
+//
+// body and link are stored as rendered text, frozen when the notification was
+// written. A user who renames therefore leaves every earlier notification
+// naming someone who no longer exists, and its /user/<old name> link 404s --
+// which is exactly what happened when Slash became Slash470. The actor id is
+// the durable reference and the list query already joins it, so the live name
+// is right there; only the stored copies were stale.
+//
+// Notifications whose actor has since been deleted keep whatever was stored:
+// the join yields no name, and the frozen text is then all we have.
+func refreshActorText(items []model.Notification) {
+	for i := range items {
+		n := &items[i]
+		if n.Type != "follow" || n.Actor == nil || *n.Actor == "" {
+			continue
+		}
+		n.Body = FollowBody(*n.Actor)
+		link := "/user/" + *n.Actor
+		n.Link = &link
 	}
 }

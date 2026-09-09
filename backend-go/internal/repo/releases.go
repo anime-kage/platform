@@ -423,6 +423,30 @@ func (r *Repo) EventsByRelease(ctx context.Context, releaseID int) ([]model.Subt
 
 // UpdateEventRO is the editor's per-row autosave: sets the RO text and marks
 // the row human-edited.
+// AppendEvent adds a subtitle line at the end of a release — a credit line, a
+// translator's note, anything the source file did not carry.
+//
+// Only appending, never inserting. idx is UNIQUE per release and the whole file
+// is ordered by it, so putting a line in the MIDDLE means renumbering every row
+// after it, inside a transaction, while someone may be editing them. Appending
+// takes max(idx)+1 and touches nothing that already exists.
+//
+// `edited` is true from the start: nothing generated this text, a person wrote it.
+func (r *Repo) AppendEvent(ctx context.Context, releaseID, startMs, endMs int, roText string) (*model.SubtitleEvent, error) {
+	var ev model.SubtitleEvent
+	err := pgxscan.Get(ctx, r.pool, &ev, `
+		INSERT INTO subtitle_events (release_id, idx, start_ms, end_ms, en_text, ro_text, edited)
+		VALUES ($1,
+		        (SELECT COALESCE(MAX(idx), -1) + 1 FROM subtitle_events WHERE release_id = $1),
+		        $2, $3, '', $4, true)
+		RETURNING id, release_id, idx, start_ms, end_ms, en_text, ro_text, edited`,
+		releaseID, startMs, endMs, roText)
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
 func (r *Repo) UpdateEventRO(ctx context.Context, releaseID, idx int, roText string) error {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE subtitle_events SET ro_text = $3, edited = true
