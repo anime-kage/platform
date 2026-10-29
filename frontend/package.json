@@ -25,7 +25,7 @@
 		"@testing-library/svelte": "^5.4.2",
 		"@testing-library/user-event": "^14.6.6",
 		"autoprefixer": "^10.4.23",
-		"happy-dom": "^20.11.6",
+		"happy-dom": "^21.0.4",
 		"postcss": "^8.5.28",
 		"svelte": "^5.45.6",
 		"svelte-check": "^4.3.4",
